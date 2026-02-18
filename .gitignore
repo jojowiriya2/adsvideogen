@@ -1,0 +1,21 @@
+# Dependencies
+frontend/node_modules/
+frontend/.next/
+
+# Build outputs
+backend/*.exe
+backend/uploads/
+backend/videos/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
