@@ -84,10 +84,18 @@ type VideoResult = {
   error?: string;
 };
 
+type ChainSegment = {
+  videoUrl: string;
+  prompt: string;
+  style: string;
+  duration: number;
+  jobId: string;
+};
+
 type UploadedImage = {
   file: File;
   previewUrl: string;
-  filename: string | null; // null = not yet uploaded to server
+  filename: string | null;
 };
 
 const MAX_IMAGES = 4;
@@ -110,8 +118,17 @@ export default function Home() {
   const pollingRef = useRef(false);
   const startTimeRef = useRef<number>(0);
 
+  // Chain state
+  const [chain, setChain] = useState<ChainSegment[]>([]);
+  const [isContinuing, setIsContinuing] = useState(false);
+  const [continuationPrompt, setContinuationPrompt] = useState("");
+  const [showContinuePanel, setShowContinuePanel] = useState(false);
+  const [continuationFrameFilename, setContinuationFrameFilename] = useState<string | null>(null);
+
   const allUploaded = images.length > 0 && images.every((img) => img.filename !== null);
   const uploadedFilenames = images.filter((img) => img.filename).map((img) => img.filename!);
+
+  const totalChainDuration = chain.reduce((sum, seg) => sum + seg.duration, 0);
 
   // Elapsed timer during generation
   useEffect(() => {
@@ -137,6 +154,8 @@ export default function Home() {
       setImages((prev) => [...prev, ...newImages]);
       setVideos([]);
       setSelectedVideo(null);
+      setChain([]);
+      setShowContinuePanel(false);
     }
   };
 
@@ -149,6 +168,8 @@ export default function Home() {
     });
     setVideos([]);
     setSelectedVideo(null);
+    setChain([]);
+    setShowContinuePanel(false);
   };
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -197,12 +218,56 @@ export default function Home() {
     }
   };
 
+  // Capture last frame from a video element via canvas
+  const captureLastFrame = (videoUrl: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      video.crossOrigin = "anonymous";
+      video.src = videoUrl;
+      video.muted = true;
+
+      video.onloadedmetadata = () => {
+        // Seek to the last frame (duration - small offset)
+        video.currentTime = Math.max(0, video.duration - 0.05);
+      };
+
+      video.onseeked = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas context failed"));
+          return;
+        }
+        ctx.drawImage(video, 0, 0);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+        resolve(dataUrl);
+      };
+
+      video.onerror = () => reject(new Error("Failed to load video"));
+    });
+  };
+
+  // Upload a captured frame (base64) to the server
+  const uploadFrame = async (dataUrl: string): Promise<string> => {
+    const res = await fetch(`${API_URL}/api/upload-frame`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_data: dataUrl }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data.filename;
+  };
+
   const generateVideos = async () => {
     if (!allUploaded) return;
 
     setIsGenerating(true);
     setVideos([]);
     setSelectedVideo(null);
+    setShowContinuePanel(false);
     pollingRef.current = true;
 
     try {
@@ -222,36 +287,22 @@ export default function Home() {
       if (data.error) throw new Error(data.error);
 
       const jobIds: string[] = data.job_ids;
+      setVideos(jobIds.map((id) => ({ id, status: "processing" as const })));
 
-      // Initialize video slots
-      setVideos(
-        jobIds.map((id) => ({ id, status: "processing" as const }))
-      );
-
-      // Poll all jobs
       const completed = new Set<string>();
-
       while (completed.size < jobIds.length && pollingRef.current) {
         await new Promise((r) => setTimeout(r, 3000));
-
         for (const jobId of jobIds) {
           if (completed.has(jobId)) continue;
-
           try {
             const statusRes = await fetch(`${API_URL}/api/status/${jobId}`);
             const status = await statusRes.json();
-
             if (status.status === "completed" || status.status === "failed") {
               completed.add(jobId);
               setVideos((prev) =>
                 prev.map((v) =>
                   v.id === jobId
-                    ? {
-                        ...v,
-                        status: status.status,
-                        video_url: status.video_url,
-                        error: status.error,
-                      }
+                    ? { ...v, status: status.status, video_url: status.video_url, error: status.error }
                     : v
                 )
               );
@@ -263,6 +314,67 @@ export default function Home() {
       }
     } catch (err) {
       alert("Generation failed: " + (err as Error).message);
+    } finally {
+      setIsGenerating(false);
+      pollingRef.current = false;
+    }
+  };
+
+  // Generate continuation segment
+  const generateContinuation = async () => {
+    if (!continuationFrameFilename || !continuationPrompt.trim()) return;
+
+    setIsGenerating(true);
+    setVideos([]);
+    setShowContinuePanel(false);
+    pollingRef.current = true;
+
+    try {
+      const res = await fetch(`${API_URL}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          style: style,
+          ratio: ratio,
+          custom_prompt: continuationPrompt,
+          count: 1,
+          duration: duration,
+          is_continuation: true,
+          last_frame_filename: continuationFrameFilename,
+          original_filenames: uploadedFilenames,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const jobIds: string[] = data.job_ids;
+      setVideos(jobIds.map((id) => ({ id, status: "processing" as const })));
+
+      const completed = new Set<string>();
+      while (completed.size < jobIds.length && pollingRef.current) {
+        await new Promise((r) => setTimeout(r, 3000));
+        for (const jobId of jobIds) {
+          if (completed.has(jobId)) continue;
+          try {
+            const statusRes = await fetch(`${API_URL}/api/status/${jobId}`);
+            const status = await statusRes.json();
+            if (status.status === "completed" || status.status === "failed") {
+              completed.add(jobId);
+              setVideos((prev) =>
+                prev.map((v) =>
+                  v.id === jobId
+                    ? { ...v, status: status.status, video_url: status.video_url, error: status.error }
+                    : v
+                )
+              );
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } catch (err) {
+      alert("Continuation failed: " + (err as Error).message);
     } finally {
       setIsGenerating(false);
       pollingRef.current = false;
@@ -288,19 +400,106 @@ export default function Home() {
     }
   };
 
+  // Auto-prompt for continuation (sends last frame to LLM)
+  const autoContinuationPrompt = async () => {
+    if (!continuationFrameFilename) return;
+    setIsAutoPrompting(true);
+    try {
+      const lastSegment = chain[chain.length - 1];
+      const res = await fetch(`${API_URL}/api/auto-prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: uploadedFilenames[0],
+          style,
+          duration,
+          product_name: productName,
+          is_continuation: true,
+          previous_prompt: lastSegment?.prompt || customPrompt,
+          frame_filename: continuationFrameFilename,
+          segment_number: chain.length + 1,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setContinuationPrompt(data.prompt);
+    } catch (err) {
+      alert("Auto prompt failed: " + (err as Error).message);
+    } finally {
+      setIsAutoPrompting(false);
+    }
+  };
+
+  // Start continuation flow: capture last frame → upload → show panel
+  const startContinuation = async (videoUrl: string, videoJobId: string) => {
+    setIsContinuing(true);
+    try {
+      // 1. Capture last frame via canvas
+      const frameDataUrl = await captureLastFrame(videoUrl);
+
+      // 2. Upload frame to server
+      const frameFilename = await uploadFrame(frameDataUrl);
+      setContinuationFrameFilename(frameFilename);
+
+      // 3. Add current video to chain if not already there
+      const lastPrompt = chain.length > 0 ? chain[chain.length - 1].prompt : customPrompt;
+      const alreadyInChain = chain.some((s) => s.jobId === videoJobId);
+      if (!alreadyInChain) {
+        setChain((prev) => [
+          ...prev,
+          {
+            videoUrl,
+            prompt: lastPrompt,
+            style,
+            duration,
+            jobId: videoJobId,
+          },
+        ]);
+      }
+
+      // 4. Show continuation panel
+      setContinuationPrompt("");
+      setShowContinuePanel(true);
+    } catch (err) {
+      alert("Failed to capture frame: " + (err as Error).message);
+    } finally {
+      setIsContinuing(false);
+    }
+  };
+
+  // Add completed continuation video to chain
+  const addToChain = (video: VideoResult) => {
+    if (!video.video_url) return;
+    setChain((prev) => [
+      ...prev,
+      {
+        videoUrl: video.video_url!,
+        prompt: continuationPrompt,
+        style,
+        duration,
+        jobId: video.id,
+      },
+    ]);
+    setContinuationPrompt("");
+    setContinuationFrameFilename(null);
+    setShowContinuePanel(false);
+  };
+
   const reset = () => {
     pollingRef.current = false;
     images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
     setImages([]);
     setVideos([]);
     setSelectedVideo(null);
+    setChain([]);
+    setShowContinuePanel(false);
+    setContinuationPrompt("");
+    setContinuationFrameFilename(null);
   };
 
   const selectedStyle = AD_STYLES.find((s) => s.value === style)!;
   const completedVideos = videos.filter((v) => v.status === "completed");
-  const processingCount = videos.filter(
-    (v) => v.status === "processing"
-  ).length;
+  const processingCount = videos.filter((v) => v.status === "processing").length;
 
   const ratioStyle = {
     aspectRatio: ratio.replace(":", " / "),
@@ -311,7 +510,14 @@ export default function Home() {
       <header className="border-b border-zinc-800 px-6 py-4">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <h1 className="text-xl font-bold">Product Video AI</h1>
-          <Badge variant="secondary">Demo</Badge>
+          <div className="flex items-center gap-3">
+            {chain.length > 0 && (
+              <Badge variant="secondary" className="bg-purple-600/20 text-purple-300">
+                {chain.length} segment{chain.length > 1 ? "s" : ""} · {totalChainDuration}s total
+              </Badge>
+            )}
+            <Badge variant="secondary">Demo</Badge>
+          </div>
         </div>
       </header>
 
@@ -338,7 +544,6 @@ export default function Home() {
             </p>
 
             <div className="grid grid-cols-2 gap-2">
-              {/* Existing image thumbnails */}
               {images.map((img, i) => (
                 <div key={i} className="relative group">
                   <img
@@ -365,7 +570,6 @@ export default function Home() {
                 </div>
               ))}
 
-              {/* Add more button */}
               {images.length < MAX_IMAGES && (
                 <div
                   onDrop={onDrop}
@@ -399,7 +603,6 @@ export default function Home() {
               )}
             </div>
 
-            {/* Upload / status */}
             {images.length > 0 && !allUploaded && (
               <Button
                 className="mt-3 w-full"
@@ -576,11 +779,129 @@ export default function Home() {
           </Card>
         </div>
 
-        {/* Video Results — 2x2 Grid */}
+        {/* Chain Timeline */}
+        {chain.length > 0 && (
+          <div className="mb-8">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">
+                Video Chain
+                <span className="ml-2 text-sm font-normal text-zinc-500">
+                  {totalChainDuration}s total
+                </span>
+              </h3>
+              <button
+                onClick={() => { setChain([]); setShowContinuePanel(false); setContinuationFrameFilename(null); }}
+                className="text-xs text-zinc-500 hover:text-zinc-300"
+              >
+                Clear chain
+              </button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-2">
+              {chain.map((seg, i) => (
+                <div key={seg.jobId} className="flex-shrink-0">
+                  <Card className="border-zinc-700 bg-zinc-900 p-2 w-40">
+                    <video
+                      src={seg.videoUrl}
+                      muted
+                      playsInline
+                      loop
+                      autoPlay
+                      className="w-full rounded bg-black object-contain"
+                      style={{ aspectRatio: ratio.replace(":", " / ") }}
+                    />
+                    <div className="mt-1.5 flex items-center justify-between">
+                      <span className="text-[10px] text-zinc-400">
+                        Seg {i + 1} · {seg.duration}s
+                      </span>
+                      <Badge className="bg-zinc-700 text-[9px] px-1 py-0">
+                        {seg.style}
+                      </Badge>
+                    </div>
+                  </Card>
+                  {i < chain.length - 1 && (
+                    <div className="flex items-center justify-center py-1">
+                      <svg className="h-3 w-3 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                      </svg>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {/* Next segment placeholder */}
+              {showContinuePanel && (
+                <div className="flex-shrink-0">
+                  <Card className="border-dashed border-purple-500/50 bg-purple-950/20 p-2 w-40 flex items-center justify-center"
+                    style={{ minHeight: "120px" }}>
+                    <p className="text-[10px] text-purple-400 text-center">Next segment...</p>
+                  </Card>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Continuation Panel */}
+        {showContinuePanel && (
+          <Card className="mb-8 border-purple-500/30 bg-purple-950/10 p-5">
+            <h3 className="mb-3 font-semibold text-purple-300">
+              Continue Video — Segment #{chain.length + 1}
+            </h3>
+            <p className="mb-3 text-xs text-zinc-400">
+              Last frame captured from segment #{chain.length}. AI will generate the next segment starting from that frame.
+              {duration >= 6 && " The original product image will be used as the ending frame."}
+              {duration < 6 && " (Short duration — no product ending frame)"}
+            </p>
+
+            <div className="mb-3 flex items-center gap-2">
+              <button
+                onClick={autoContinuationPrompt}
+                disabled={isAutoPrompting}
+                className="rounded-md bg-purple-600 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isAutoPrompting ? "Analyzing..." : "Auto Prompt (Continuation)"}
+              </button>
+              <span className="text-[10px] text-zinc-500">
+                LLM sees the last frame + knows what came before
+              </span>
+            </div>
+
+            <textarea
+              value={continuationPrompt}
+              onChange={(e) => {
+                setContinuationPrompt(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = e.target.scrollHeight + "px";
+              }}
+              placeholder="Describe what happens next in the ad... or click Auto Prompt"
+              className="w-full resize-none overflow-hidden rounded-lg border border-purple-500/30 bg-zinc-900 p-2 text-xs text-white placeholder-zinc-600 focus:border-purple-500 focus:outline-none"
+              rows={3}
+            />
+
+            <div className="mt-3 flex gap-2">
+              <Button
+                className="flex-1 bg-purple-600 hover:bg-purple-700"
+                disabled={!continuationPrompt.trim() || isGenerating}
+                onClick={generateContinuation}
+              >
+                {isGenerating
+                  ? `Generating segment #${chain.length + 1}...`
+                  : `Generate Segment #${chain.length + 1} ($${selectedStyle.priceNum.toFixed(2)})`}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => { setShowContinuePanel(false); setContinuationFrameFilename(null); }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </Card>
+        )}
+
+        {/* Video Results */}
         {videos.length > 0 && (
           <div>
             <h3 className="mb-4 text-lg font-semibold">
-              Pick Your Favorite{" "}
+              {chain.length > 0 && !showContinuePanel ? "Latest Segment" : "Pick Your Favorite"}{" "}
               {completedVideos.length > 0 && (
                 <span className="text-sm font-normal text-zinc-500">
                   — {completedVideos.length}/{videos.length} ready
@@ -626,7 +947,7 @@ export default function Home() {
                           </div>
                         </div>
                         <p className="text-xs text-zinc-500">
-                          Generating #{i + 1}...
+                          {chain.length > 0 ? `Generating segment #${chain.length + 1}...` : `Generating #${i + 1}...`}
                         </p>
                       </div>
                     );
@@ -657,7 +978,7 @@ export default function Home() {
 
                   <div className="mt-2 flex items-center justify-between">
                     <span className="text-xs text-zinc-500">
-                      Variation #{i + 1}
+                      {chain.length > 0 ? `Segment #${chain.length + 1}` : `Variation #${i + 1}`}
                     </span>
                     {selectedVideo === video.id && (
                       <Badge className="bg-blue-600 text-xs">Selected</Badge>
@@ -667,29 +988,44 @@ export default function Home() {
               ))}
             </div>
 
-            {/* Actions for selected video */}
-            {selectedVideo && (
-              <div className="mt-6 flex gap-3">
-                <Button asChild className="flex-1" variant="outline">
-                  <a
-                    href={
-                      videos.find((v) => v.id === selectedVideo)?.video_url
-                    }
-                    download
+            {/* Actions for selected/completed video */}
+            {selectedVideo && (() => {
+              const selVideo = videos.find((v) => v.id === selectedVideo);
+              if (!selVideo || selVideo.status !== "completed" || !selVideo.video_url) return null;
+              return (
+                <div className="mt-6 flex gap-3">
+                  <Button asChild className="flex-1" variant="outline">
+                    <a href={selVideo.video_url} download>
+                      Download Video
+                    </a>
+                  </Button>
+                  <Button
+                    className="flex-1 bg-purple-600 hover:bg-purple-700"
+                    disabled={isContinuing || isGenerating}
+                    onClick={() => startContinuation(selVideo.video_url!, selVideo.id)}
                   >
-                    Download Selected Video
-                  </a>
-                </Button>
-                <Button variant="outline" className="flex-1" onClick={reset}>
-                  Start Over
-                </Button>
-              </div>
-            )}
+                    {isContinuing ? "Capturing frame..." : "Continue (Add Segment)"}
+                  </Button>
+                  {/* Add to chain without continuing */}
+                  {chain.length > 0 && !chain.some((s) => s.jobId === selVideo.id) && (
+                    <Button
+                      variant="outline"
+                      onClick={() => addToChain(selVideo)}
+                    >
+                      Add to Chain
+                    </Button>
+                  )}
+                  <Button variant="outline" onClick={reset}>
+                    Start Over
+                  </Button>
+                </div>
+              );
+            })()}
           </div>
         )}
 
         {/* Empty state */}
-        {videos.length === 0 && !isGenerating && (
+        {videos.length === 0 && !isGenerating && !showContinuePanel && (
           <Card className="border-zinc-800 bg-zinc-900 p-12 text-center">
             <p className="text-zinc-500">
               Upload a product image and generate video variations to choose

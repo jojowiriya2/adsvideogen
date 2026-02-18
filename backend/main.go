@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,11 +24,49 @@ import (
 
 var (
 	runwareAPIURL    = "https://api.runware.ai/v1"
-	runwareAPIKey    = "UqL2n0wIu59mvflZRhGg09MYvXWnVasC"
+	runwareAPIKey    string
 	useMock          = false
-	modelRunnerURL   = "http://localhost:12434/engines/llama.cpp/v1/chat/completions"
-	modelRunnerModel = "ai/gemma3:4B-Q4_K_M"
+	modelRunnerURL   string
+	modelRunnerModel string
 )
+
+func init() {
+	loadEnvFile(".env")
+	runwareAPIKey = getEnv("RUNWARE_API_KEY", "")
+	modelRunnerURL = getEnv("MODEL_RUNNER_URL", "http://localhost:12434/engines/llama.cpp/v1/chat/completions")
+	modelRunnerModel = getEnv("MODEL_RUNNER_MODEL", "ai/gemma3:4B-Q4_K_M")
+}
+
+func loadEnvFile(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return // .env is optional
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if os.Getenv(key) == "" {
+				os.Setenv(key, val)
+			}
+		}
+	}
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // Each style maps to: best model + prompt + price
 type StyleConfig struct {
@@ -113,6 +153,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/upload", handleUpload)
+	mux.HandleFunc("POST /api/upload-frame", handleUploadFrame)
 	mux.HandleFunc("POST /api/generate", handleGenerate)
 	mux.HandleFunc("POST /api/auto-prompt", handleAutoPrompt)
 	mux.HandleFunc("GET /api/status/{id}", handleStatus)
@@ -182,12 +223,9 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
+func handleUploadFrame(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Filename    string `json:"filename"`
-		Style       string `json:"style"`
-		Duration    int    `json:"duration"`
-		ProductName string `json:"product_name"`
+		ImageData string `json:"image_data"` // base64 data URL from canvas
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -195,18 +233,75 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Filename == "" {
+	if req.ImageData == "" {
+		jsonError(w, "image_data is required", http.StatusBadRequest)
+		return
+	}
+
+	// Strip data URL prefix: "data:image/jpeg;base64,..." → raw base64
+	b64Data := req.ImageData
+	if idx := bytes.IndexByte([]byte(b64Data), ','); idx >= 0 {
+		b64Data = b64Data[idx+1:]
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		jsonError(w, "Invalid base64 image data", http.StatusBadRequest)
+		return
+	}
+
+	filename := "frame-" + uuid.New().String()[:8] + ".jpg"
+	savePath := filepath.Join("uploads", filename)
+
+	if err := os.WriteFile(savePath, decoded, 0644); err != nil {
+		jsonError(w, "Failed to save frame", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("UploadFrame: Saved %s (%d KB)\n", filename, len(decoded)/1024)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"filename":  filename,
+		"image_url": fmt.Sprintf("http://localhost:8080/uploads/%s", filename),
+	})
+}
+
+func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Filename       string `json:"filename"`
+		Style          string `json:"style"`
+		Duration       int    `json:"duration"`
+		ProductName    string `json:"product_name"`
+		IsContinuation bool   `json:"is_continuation"`
+		PreviousPrompt string `json:"previous_prompt"`
+		FrameFilename  string `json:"frame_filename"` // last frame capture for continuation
+		SegmentNumber  int    `json:"segment_number"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// For continuation, use frame_filename; otherwise use filename
+	imageFilename := req.Filename
+	if req.IsContinuation && req.FrameFilename != "" {
+		imageFilename = req.FrameFilename
+	}
+
+	if imageFilename == "" {
 		jsonError(w, "filename is required", http.StatusBadRequest)
 		return
 	}
 
-	imagePath := filepath.Join("uploads", req.Filename)
+	imagePath := filepath.Join("uploads", imageFilename)
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
 		jsonError(w, "Image not found", http.StatusBadRequest)
 		return
 	}
 
-	// Read image, decode, and re-encode as JPEG for moondream2 compatibility
+	// Read image, decode, and re-encode as JPEG for model compatibility
 	imgFile, err := os.Open(imagePath)
 	if err != nil {
 		jsonError(w, "Failed to read image", http.StatusInternalServerError)
@@ -220,7 +315,6 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-encode as JPEG (moondream2 llama.cpp doesn't support webp)
 	var jpegBuf bytes.Buffer
 	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 80}); err != nil {
 		jsonError(w, "Failed to convert image", http.StatusInternalServerError)
@@ -255,17 +349,38 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		productCtx = req.ProductName
 	}
 
-	userPrompt := fmt.Sprintf(
-		"You are writing a prompt for an AI video generator to create an advertisement for %s (shown in the image). "+
-			"Look at the image to understand the product's shape, color, and features. "+
-			"Write a video ad prompt that includes: the scene or environment, camera movement, lighting, mood, and any action or motion that would sell this product. "+
-			"The video is %d seconds long. Style: %s. "+
-			"Do NOT describe the product's appearance in detail — the image is already provided to the video generator. "+
-			"Focus on how the product is showcased: the setting, motion, interactions, and cinematic direction. "+
-			"No emojis, no hashtags, no social media language. "+
-			"Output only the prompt, nothing else.",
-		productCtx, dur, hint,
-	)
+	var userPrompt string
+	if req.IsContinuation {
+		// Continuation prompt: LLM sees the last frame and must write a follow-up segment
+		continueEnding := ""
+		if dur >= 6 {
+			continueEnding = "The video should end by transitioning back to a clean shot of the product, since the original product image will be used as the last frame. "
+		}
+		userPrompt = fmt.Sprintf(
+			"You are writing a continuation prompt for an AI video generator. This is segment #%d of a multi-part advertisement for %s. "+
+				"The attached image is the LAST FRAME of the previous video segment. "+
+				"The previous segment's prompt was: \"%s\" "+
+				"Write a NEW video prompt that continues seamlessly from this frame. The transition should feel natural and connected. "+
+				"The video is %d seconds long. Style: %s. "+
+				"%s"+
+				"Do NOT repeat what the previous segment already showed. Introduce a new angle, scene, or movement that advances the ad story. "+
+				"No emojis, no hashtags, no social media language. "+
+				"Output only the prompt, nothing else.",
+			req.SegmentNumber, productCtx, req.PreviousPrompt, dur, hint, continueEnding,
+		)
+	} else {
+		userPrompt = fmt.Sprintf(
+			"You are writing a prompt for an AI video generator to create an advertisement for %s (shown in the image). "+
+				"Look at the image to understand the product's shape, color, and features. "+
+				"Write a video ad prompt that includes: the scene or environment, camera movement, lighting, mood, and any action or motion that would sell this product. "+
+				"The video is %d seconds long. Style: %s. "+
+				"Do NOT describe the product's appearance in detail — the image is already provided to the video generator. "+
+				"Focus on how the product is showcased: the setting, motion, interactions, and cinematic direction. "+
+				"No emojis, no hashtags, no social media language. "+
+				"Output only the prompt, nothing else.",
+			productCtx, dur, hint,
+		)
+	}
 
 	// Build OpenAI-compatible vision request for Docker Model Runner
 	chatPayload := map[string]interface{}{
@@ -336,12 +451,15 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 
 func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Filenames    []string `json:"filenames"`
-		Style        string   `json:"style"`
-		Ratio        string   `json:"ratio"`
-		CustomPrompt string   `json:"custom_prompt"`
-		Count        int      `json:"count"`
-		Duration     int      `json:"duration"`
+		Filenames         []string `json:"filenames"`
+		Style             string   `json:"style"`
+		Ratio             string   `json:"ratio"`
+		CustomPrompt      string   `json:"custom_prompt"`
+		Count             int      `json:"count"`
+		Duration          int      `json:"duration"`
+		IsContinuation    bool     `json:"is_continuation"`
+		LastFrameFilename string   `json:"last_frame_filename"` // captured last frame
+		OriginalFilenames []string `json:"original_filenames"`  // original product images
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -349,19 +467,43 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Filenames) == 0 {
+	if !req.IsContinuation && len(req.Filenames) == 0 {
 		jsonError(w, "filenames is required", http.StatusBadRequest)
+		return
+	}
+	if req.IsContinuation && req.LastFrameFilename == "" {
+		jsonError(w, "last_frame_filename is required for continuation", http.StatusBadRequest)
 		return
 	}
 
 	var imagePaths []string
-	for _, fn := range req.Filenames {
-		p := filepath.Join("uploads", fn)
-		if _, err := os.Stat(p); os.IsNotExist(err) {
-			jsonError(w, fmt.Sprintf("Image not found: %s", fn), http.StatusBadRequest)
+	if req.IsContinuation {
+		// Continuation: last frame = first, original product image = last (if duration >= 6s)
+		lastFramePath := filepath.Join("uploads", req.LastFrameFilename)
+		if _, err := os.Stat(lastFramePath); os.IsNotExist(err) {
+			jsonError(w, "Last frame image not found", http.StatusBadRequest)
 			return
 		}
-		imagePaths = append(imagePaths, p)
+		imagePaths = append(imagePaths, lastFramePath)
+
+		if req.Duration >= 6 && len(req.OriginalFilenames) > 0 {
+			// Use first original product image as last frame anchor
+			origPath := filepath.Join("uploads", req.OriginalFilenames[0])
+			if _, err := os.Stat(origPath); os.IsNotExist(err) {
+				jsonError(w, "Original product image not found", http.StatusBadRequest)
+				return
+			}
+			imagePaths = append(imagePaths, origPath)
+		}
+	} else {
+		for _, fn := range req.Filenames {
+			p := filepath.Join("uploads", fn)
+			if _, err := os.Stat(p); os.IsNotExist(err) {
+				jsonError(w, fmt.Sprintf("Image not found: %s", fn), http.StatusBadRequest)
+				return
+			}
+			imagePaths = append(imagePaths, p)
+		}
 	}
 
 	// Get style config (auto-selects best model)

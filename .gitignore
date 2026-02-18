@@ -11,6 +11,7 @@ backend/videos/
 .env
 .env.local
 .env.*.local
+backend/.env
 
 # IDE
 .vscode/
