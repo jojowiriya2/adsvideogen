@@ -4,6 +4,29 @@ Upload product images, generate AI video ad variations, pick the best one.
 
 Next.js frontend + Go backend + [Runware.ai](https://runware.ai) API for video generation + Docker Model Runner for auto-prompt.
 
+## Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/jojowiriya2/adsvideogen.git
+cd adsvideogen
+
+# 2. Set up env
+cp backend/.env.example backend/.env
+# Edit backend/.env and add your RUNWARE_API_KEY
+
+# 3. Install frontend
+cd frontend && npm install && cd ..
+
+# 4. Start backend (terminal 1)
+cd backend && go run main.go
+
+# 5. Start frontend (terminal 2)
+cd frontend && npm run dev
+
+# 6. Open http://localhost:3000
+```
+
 ## Prerequisites
 
 - [Go](https://go.dev/dl/) 1.21+
