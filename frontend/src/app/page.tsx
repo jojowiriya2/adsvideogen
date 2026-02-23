@@ -23,6 +23,7 @@ const AD_STYLES = [
     desc: "Google Veo 3.1 — best quality with native audio",
     durations: [4, 6, 8],
     estSeconds: 120,
+    maxImages: 2,
   },
   {
     value: "rotating",
@@ -32,6 +33,7 @@ const AD_STYLES = [
     desc: "Product spin on white background",
     durations: [5, 8, 16],
     estSeconds: 60,
+    maxImages: 2,
   },
   {
     value: "lifestyle",
@@ -41,6 +43,7 @@ const AD_STYLES = [
     desc: "Real-world setting, warm social media aesthetic",
     durations: [5, 8],
     estSeconds: 90,
+    maxImages: 2,
   },
   {
     value: "tiktok",
@@ -50,6 +53,7 @@ const AD_STYLES = [
     desc: "Fast-paced, bold colors, dynamic transitions",
     durations: [5, 8, 16],
     estSeconds: 60,
+    maxImages: 2,
   },
   {
     value: "unboxing",
@@ -59,6 +63,7 @@ const AD_STYLES = [
     desc: "Satisfying unboxing reveal, POV style",
     durations: [5, 8, 16],
     estSeconds: 60,
+    maxImages: 2,
   },
   {
     value: "minimal",
@@ -68,6 +73,7 @@ const AD_STYLES = [
     desc: "Simple surface, soft shadows, modern look",
     durations: [5, 8, 16],
     estSeconds: 60,
+    maxImages: 2,
   },
 ];
 
@@ -98,8 +104,6 @@ type UploadedImage = {
   filename: string | null;
 };
 
-const MAX_IMAGES = 4;
-
 export default function Home() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [productName, setProductName] = useState("");
@@ -125,6 +129,9 @@ export default function Home() {
   const [showContinuePanel, setShowContinuePanel] = useState(false);
   const [continuationFrameFilename, setContinuationFrameFilename] = useState<string | null>(null);
 
+  const selectedStyle = AD_STYLES.find((s) => s.value === style)!;
+  const maxImages = selectedStyle.maxImages;
+
   const allUploaded = images.length > 0 && images.every((img) => img.filename !== null);
   const uploadedFilenames = images.filter((img) => img.filename).map((img) => img.filename!);
 
@@ -147,7 +154,7 @@ export default function Home() {
     const newImages: UploadedImage[] = [];
     for (const file of Array.from(files)) {
       if (!file.type.startsWith("image/")) continue;
-      if (images.length + newImages.length >= MAX_IMAGES) break;
+      if (images.length + newImages.length >= maxImages) break;
       newImages.push({ file, previewUrl: URL.createObjectURL(file), filename: null });
     }
     if (newImages.length > 0) {
@@ -388,7 +395,7 @@ export default function Home() {
       const res = await fetch(`${API_URL}/api/auto-prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: uploadedFilenames[0], style, duration, product_name: productName }),
+        body: JSON.stringify({ filenames: uploadedFilenames, style, duration, product_name: productName }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -410,7 +417,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          filename: uploadedFilenames[0],
+          filenames: uploadedFilenames,
           style,
           duration,
           product_name: productName,
@@ -497,7 +504,6 @@ export default function Home() {
     setContinuationFrameFilename(null);
   };
 
-  const selectedStyle = AD_STYLES.find((s) => s.value === style)!;
   const completedVideos = videos.filter((v) => v.status === "completed");
   const processingCount = videos.filter((v) => v.status === "processing").length;
 
@@ -540,7 +546,7 @@ export default function Home() {
               1. Product Images
             </h3>
             <p className="mb-3 text-[10px] text-zinc-500">
-              Up to {MAX_IMAGES} angles — first image = start frame, last = end frame
+              Up to {maxImages} angles — first image = start frame, last = end frame
             </p>
 
             <div className="grid grid-cols-2 gap-2">
@@ -570,7 +576,7 @@ export default function Home() {
                 </div>
               ))}
 
-              {images.length < MAX_IMAGES && (
+              {images.length < maxImages && (
                 <div
                   onDrop={onDrop}
                   onDragOver={onDragOver}
@@ -648,6 +654,14 @@ export default function Home() {
                 const newStyle = AD_STYLES.find((s) => s.value === v)!;
                 if (!newStyle.durations.includes(duration)) {
                   setDuration(newStyle.durations[0]);
+                }
+                // Trim images if new style supports fewer
+                if (images.length > newStyle.maxImages) {
+                  setImages((prev) => {
+                    const trimmed = prev.slice(0, newStyle.maxImages);
+                    prev.slice(newStyle.maxImages).forEach((img) => URL.revokeObjectURL(img.previewUrl));
+                    return trimmed;
+                  });
                 }
               }}>
               <SelectTrigger className="border-zinc-700 bg-zinc-800 text-white">

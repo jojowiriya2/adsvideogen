@@ -104,7 +104,7 @@ var styleConfigs = map[string]StyleConfig{
 	"unboxing": {
 		Model:     "vidu:4@2",
 		ModelName: "Vidu Q3 Turbo",
-		Prompt:    "POV first-person unboxing video. Start with a closed premium box on a table. Two hands slowly lift the lid off the box, revealing the product nestled inside. The product is revealed at the end, not shown at the beginning. Smooth slow motion, soft natural lighting, ASMR aesthetic, satisfying reveal moment.",
+		Prompt:    "POV first-person unboxing video. Start with a closed sleek premium cardboard packaging box on a clean table. Two hands slowly lift the lid off the separate cardboard box. Inside the box, the product is gradually revealed. The box is NOT the product — it is separate outer packaging that contains the product. Smooth slow motion, soft natural lighting, ASMR satisfying reveal moment. The final frame shows the product fully revealed out of the box.",
 		Price:     0.13,
 	},
 	"minimal": {
@@ -269,14 +269,14 @@ func handleUploadFrame(w http.ResponseWriter, r *http.Request) {
 
 func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Filename       string `json:"filename"`
-		Style          string `json:"style"`
-		Duration       int    `json:"duration"`
-		ProductName    string `json:"product_name"`
-		IsContinuation bool   `json:"is_continuation"`
-		PreviousPrompt string `json:"previous_prompt"`
-		FrameFilename  string `json:"frame_filename"` // last frame capture for continuation
-		SegmentNumber  int    `json:"segment_number"`
+		Filenames      []string `json:"filenames"`
+		Style          string   `json:"style"`
+		Duration       int      `json:"duration"`
+		ProductName    string   `json:"product_name"`
+		IsContinuation bool     `json:"is_continuation"`
+		PreviousPrompt string   `json:"previous_prompt"`
+		FrameFilename  string   `json:"frame_filename"`
+		SegmentNumber  int      `json:"segment_number"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -284,45 +284,53 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For continuation, use frame_filename; otherwise use filename
-	imageFilename := req.Filename
+	// Build list of image filenames to send to LLM
+	var imageFilenames []string
 	if req.IsContinuation && req.FrameFilename != "" {
-		imageFilename = req.FrameFilename
+		// Continuation: send the captured last frame
+		imageFilenames = append(imageFilenames, req.FrameFilename)
 	}
+	// Always include all uploaded product images so LLM sees every angle
+	imageFilenames = append(imageFilenames, req.Filenames...)
 
-	if imageFilename == "" {
-		jsonError(w, "filename is required", http.StatusBadRequest)
+	if len(imageFilenames) == 0 {
+		jsonError(w, "filenames is required", http.StatusBadRequest)
 		return
 	}
 
-	imagePath := filepath.Join("uploads", imageFilename)
-	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
-		jsonError(w, "Image not found", http.StatusBadRequest)
-		return
+	// Encode all images as JPEG base64
+	var imageBase64s []string
+	for _, fn := range imageFilenames {
+		imgPath := filepath.Join("uploads", fn)
+		if _, err := os.Stat(imgPath); os.IsNotExist(err) {
+			continue // skip missing files
+		}
+
+		imgFile, err := os.Open(imgPath)
+		if err != nil {
+			continue
+		}
+
+		img, _, err := image.Decode(imgFile)
+		imgFile.Close()
+		if err != nil {
+			continue
+		}
+
+		var jpegBuf bytes.Buffer
+		if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 80}); err != nil {
+			continue
+		}
+
+		b64 := fmt.Sprintf("data:image/jpeg;base64,%s", base64.StdEncoding.EncodeToString(jpegBuf.Bytes()))
+		imageBase64s = append(imageBase64s, b64)
+		fmt.Printf("AutoPrompt: Image %s converted to JPEG (%d KB)\n", fn, jpegBuf.Len()/1024)
 	}
 
-	// Read image, decode, and re-encode as JPEG for model compatibility
-	imgFile, err := os.Open(imagePath)
-	if err != nil {
-		jsonError(w, "Failed to read image", http.StatusInternalServerError)
+	if len(imageBase64s) == 0 {
+		jsonError(w, "No valid images found", http.StatusBadRequest)
 		return
 	}
-	defer imgFile.Close()
-
-	img, _, err := image.Decode(imgFile)
-	if err != nil {
-		jsonError(w, fmt.Sprintf("Failed to decode image: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	var jpegBuf bytes.Buffer
-	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 80}); err != nil {
-		jsonError(w, "Failed to convert image", http.StatusInternalServerError)
-		return
-	}
-
-	imageBase64 := fmt.Sprintf("data:image/jpeg;base64,%s", base64.StdEncoding.EncodeToString(jpegBuf.Bytes()))
-	fmt.Printf("AutoPrompt: Image converted to JPEG (%d KB)\n", jpegBuf.Len()/1024)
 
 	// Build style-specific instruction
 	styleDesc := map[string]string{
@@ -330,7 +338,7 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		"rotating":  "360-degree product rotation on a turntable, even lighting, smooth spin",
 		"lifestyle": "lifestyle scene in a real-world environment, warm natural lighting, a hand interacting with the product",
 		"tiktok":    "fast-paced TikTok ad with dynamic zoom, product sliding or dropping into frame, high contrast",
-		"unboxing":  "POV unboxing video, hands opening a premium box to reveal the product, slow motion",
+		"unboxing":  "POV unboxing video, hands opening a separate cardboard packaging box (NOT the product itself) to reveal the product inside at the end, slow motion, ASMR aesthetic",
 		"minimal":   "minimal clean shot, product on a smooth surface, soft shadows, subtle camera drift",
 	}
 
@@ -369,37 +377,47 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 			req.SegmentNumber, productCtx, req.PreviousPrompt, dur, hint, continueEnding,
 		)
 	} else {
+		imageCtx := ""
+		if len(imageBase64s) > 1 {
+			imageCtx = fmt.Sprintf("You are given %d images of the product from different angles. The first image is the start frame and the last image is the end frame of the video. ", len(imageBase64s))
+		}
 		userPrompt = fmt.Sprintf(
-			"You are writing a prompt for an AI video generator to create an advertisement for %s (shown in the image). "+
-				"Look at the image to understand the product's shape, color, and features. "+
+			"You are writing a prompt for an AI video generator to create an advertisement for %s (shown in the images). "+
+				"%s"+
+				"Look at all the images to understand the product's shape, color, and features from every angle. "+
 				"Write a video ad prompt that includes: the scene or environment, camera movement, lighting, mood, and any action or motion that would sell this product. "+
 				"The video is %d seconds long. Style: %s. "+
-				"Do NOT describe the product's appearance in detail — the image is already provided to the video generator. "+
+				"Do NOT describe the product's appearance in detail — the images are already provided to the video generator. "+
 				"Focus on how the product is showcased: the setting, motion, interactions, and cinematic direction. "+
+				"If multiple angles are provided, incorporate the transition between them (e.g. closed to open, front to back). "+
 				"No emojis, no hashtags, no social media language. "+
 				"Output only the prompt, nothing else.",
-			productCtx, dur, hint,
+			productCtx, imageCtx, dur, hint,
 		)
 	}
 
-	// Build OpenAI-compatible vision request for Docker Model Runner
+	// Build message content: text + all images
+	contentParts := []map[string]interface{}{
+		{
+			"type": "text",
+			"text": userPrompt,
+		},
+	}
+	for _, b64 := range imageBase64s {
+		contentParts = append(contentParts, map[string]interface{}{
+			"type": "image_url",
+			"image_url": map[string]string{
+				"url": b64,
+			},
+		})
+	}
+
 	chatPayload := map[string]interface{}{
 		"model": modelRunnerModel,
 		"messages": []map[string]interface{}{
 			{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": userPrompt,
-					},
-					{
-						"type": "image_url",
-						"image_url": map[string]string{
-							"url": imageBase64,
-						},
-					},
-				},
+				"role":    "user",
+				"content": contentParts,
 			},
 		},
 		"max_tokens": 300,
@@ -407,7 +425,7 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 
 	chatBody, _ := json.Marshal(chatPayload)
 
-	fmt.Printf("AutoPrompt: Sending image to %s (%s)...\n", modelRunnerModel, req.Style)
+	fmt.Printf("AutoPrompt: Sending %d image(s) to %s (%s)...\n", len(imageBase64s), modelRunnerModel, req.Style)
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	httpReq, _ := http.NewRequest("POST", modelRunnerURL, bytes.NewBuffer(chatBody))
@@ -583,9 +601,16 @@ func runwareGenerate(job *Job) {
 	fmt.Printf("Job %s: Model=%s Style=%s Images=%d\n", job.ID, job.Model, job.Style, len(job.ImagePaths))
 	fmt.Printf("Job %s: Prompt=%s\n", job.ID, job.Prompt)
 
-	// Build frameImages from all uploaded images
+	// Clamp to max 2 images (first + last) — all current models only support 1-2 frameImages
+	usePaths := job.ImagePaths
+	if len(usePaths) > 2 {
+		usePaths = []string{usePaths[0], usePaths[len(usePaths)-1]}
+		fmt.Printf("Job %s: Clamped %d images → 2 (first + last)\n", job.ID, len(job.ImagePaths))
+	}
+
+	// Build frameImages from uploaded images
 	var frameImages []map[string]interface{}
-	for i, imgPath := range job.ImagePaths {
+	for i, imgPath := range usePaths {
 		imageData, err := os.ReadFile(imgPath)
 		if err != nil {
 			setJobError(job, fmt.Sprintf("Failed to read image %d: %v", i+1, err))
@@ -607,15 +632,26 @@ func runwareGenerate(job *Job) {
 			"inputImage": imageBase64,
 		}
 
-		// Set frame positions: first image = "first", last image = "last", middle = auto
-		if len(job.ImagePaths) == 1 {
-			frame["frame"] = "first"
-		} else if i == 0 {
-			frame["frame"] = "first"
-		} else if i == len(job.ImagePaths)-1 {
-			frame["frame"] = "last"
+		// Set frame positions based on style
+		if job.Style == "unboxing" {
+			// Unboxing: product is the REVEAL at the end, not the start
+			if len(usePaths) == 1 {
+				frame["frame"] = "last"
+			} else if i == 0 {
+				frame["frame"] = "first"
+			} else if i == len(usePaths)-1 {
+				frame["frame"] = "last"
+			}
+		} else {
+			// All other styles: first image = start, last image = end
+			if len(usePaths) == 1 {
+				frame["frame"] = "first"
+			} else if i == 0 {
+				frame["frame"] = "first"
+			} else if i == len(usePaths)-1 {
+				frame["frame"] = "last"
+			}
 		}
-		// middle images: omit frame param → Runware auto-distributes
 
 		frameImages = append(frameImages, frame)
 	}
