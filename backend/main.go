@@ -40,7 +40,7 @@ func init() {
 func loadEnvFile(path string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return // .env is optional
+		return
 	}
 	defer f.Close()
 
@@ -68,54 +68,7 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-// Each style maps to: best model + prompt + price
-type StyleConfig struct {
-	Model     string  // Runware model ID
-	ModelName string  // Display name
-	Prompt    string  // Base prompt
-	Price     float64
-}
-
-var styleConfigs = map[string]StyleConfig{
-	"cinematic": {
-		Model:     "google:3@3",
-		ModelName: "Veo 3.1 Fast",
-		Prompt:    "Slow orbit around the product. Dramatic rim lighting with soft shadows. Shallow depth of field. Premium commercial aesthetic. Sharp focus.",
-		Price:     0.80,
-	},
-	"rotating": {
-		Model:     "vidu:4@2",
-		ModelName: "Vidu Q3 Turbo",
-		Prompt:    "Product rotates slowly 360 degrees on axis. Soft even lighting, clean white background. Smooth continuous spin. Commercial photography style.",
-		Price:     0.13,
-	},
-	"lifestyle": {
-		Model:     "pixverse:1@7",
-		ModelName: "PixVerse v5.6",
-		Prompt:    "Subtle handheld sway. Warm golden hour lighting, soft bokeh background. Shallow depth of field. Authentic lifestyle aesthetic. Sharp focus on product.",
-		Price:     0.24,
-	},
-	"tiktok": {
-		Model:     "vidu:4@1",
-		ModelName: "Vidu Q3",
-		Prompt:    "Quick zoom-in toward the product. Product slides into frame with impact. High contrast, bold colors, fast-paced. Trendy Gen-Z aesthetic.",
-		Price:     0.05,
-	},
-	"unboxing": {
-		Model:     "vidu:4@2",
-		ModelName: "Vidu Q3 Turbo",
-		Prompt:    "Top-down fixed camera. Hands lift lid off a separate cardboard packaging box. Tissue paper parts to reveal the product inside. The box is NOT the product — it is outer packaging. Slow satisfying pacing. Soft overhead lighting. ASMR aesthetic.",
-		Price:     0.13,
-	},
-	"minimal": {
-		Model:     "vidu:4@1",
-		ModelName: "Vidu Q3",
-		Prompt:    "Product on clean surface. Soft directional shadow. Slow subtle push-in. Minimalist commercial look. Sharp focus.",
-		Price:     0.05,
-	},
-}
-
-// All available models that can be selected
+// All available models
 var availableModels = map[string]struct {
 	Name  string
 	Price float64
@@ -126,25 +79,27 @@ var availableModels = map[string]struct {
 	"vidu:4@1":     {Name: "Vidu Q3", Price: 0.05},
 }
 
-// Aspect ratio presets (must match Vidu/PixVerse supported dimensions)
+// Aspect ratio presets (720p)
 var ratioSizes = map[string][2]int{
-	"9:16":  {720, 1280},  // Mobile / TikTok / Reels (720p)
-	"16:9":  {1280, 720},  // Desktop / YouTube (720p)
-	"1:1":   {720, 720},   // Square / Instagram (720p)
+	"9:16": {720, 1280},
+	"16:9": {1280, 720},
+	"1:1":  {720, 720},
 }
 
 type Job struct {
-	ID         string   `json:"id"`
-	Status     string   `json:"status"`
-	ImagePaths []string `json:"image_paths"`
-	VideoURL   string   `json:"video_url,omitempty"`
-	Prompt     string   `json:"prompt"`
-	Style      string   `json:"style"`
-	Ratio      string   `json:"ratio"`
-	Duration   int      `json:"duration"`
-	Model      string   `json:"model"`
-	CreatedAt  string   `json:"created_at"`
-	Error      string   `json:"error,omitempty"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	VideoURL  string `json:"video_url,omitempty"`
+	Prompt    string `json:"prompt"`
+	Model     string `json:"model"`
+	Ratio     string `json:"ratio"`
+	Duration  int    `json:"duration"`
+	CreatedAt string `json:"created_at"`
+	Error     string `json:"error,omitempty"`
+
+	// internal, not serialized
+	imagePaths []string
+	modelID    string
 }
 
 var (
@@ -154,7 +109,7 @@ var (
 
 func main() {
 	if runwareAPIKey == "" && !useMock {
-		fmt.Println("ERROR: Set runwareAPIKey in main.go")
+		fmt.Println("ERROR: Set RUNWARE_API_KEY in .env")
 		os.Exit(1)
 	}
 
@@ -164,12 +119,10 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/upload", handleUpload)
-	mux.HandleFunc("POST /api/upload-frame", handleUploadFrame)
 	mux.HandleFunc("POST /api/generate", handleGenerate)
 	mux.HandleFunc("POST /api/auto-prompt", handleAutoPrompt)
 	mux.HandleFunc("GET /api/status/{id}", handleStatus)
 	mux.HandleFunc("GET /api/jobs", handleListJobs)
-	mux.HandleFunc("GET /api/models", handleListModels)
 	mux.HandleFunc("GET /health", handleHealth)
 
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
@@ -234,60 +187,12 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleUploadFrame(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ImageData string `json:"image_data"` // base64 data URL from canvas
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.ImageData == "" {
-		jsonError(w, "image_data is required", http.StatusBadRequest)
-		return
-	}
-
-	// Strip data URL prefix: "data:image/jpeg;base64,..." → raw base64
-	b64Data := req.ImageData
-	if idx := bytes.IndexByte([]byte(b64Data), ','); idx >= 0 {
-		b64Data = b64Data[idx+1:]
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(b64Data)
-	if err != nil {
-		jsonError(w, "Invalid base64 image data", http.StatusBadRequest)
-		return
-	}
-
-	filename := "frame-" + uuid.New().String()[:8] + ".jpg"
-	savePath := filepath.Join("uploads", filename)
-
-	if err := os.WriteFile(savePath, decoded, 0644); err != nil {
-		jsonError(w, "Failed to save frame", http.StatusInternalServerError)
-		return
-	}
-
-	fmt.Printf("UploadFrame: Saved %s (%d KB)\n", filename, len(decoded)/1024)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"filename":  filename,
-		"image_url": fmt.Sprintf("http://localhost:8080/uploads/%s", filename),
-	})
-}
-
 func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Filenames      []string `json:"filenames"`
-		Style          string   `json:"style"`
-		Duration       int      `json:"duration"`
-		ProductName    string   `json:"product_name"`
-		IsContinuation bool     `json:"is_continuation"`
-		PreviousPrompt string   `json:"previous_prompt"`
-		FrameFilename  string   `json:"frame_filename"`
-		SegmentNumber  int      `json:"segment_number"`
+		Filenames   []string `json:"filenames"`
+		ProductName string   `json:"product_name"`
+		SceneNumber int      `json:"scene_number"`
+		TotalScenes int      `json:"total_scenes"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -295,26 +200,17 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build list of image filenames to send to LLM
-	var imageFilenames []string
-	if req.IsContinuation && req.FrameFilename != "" {
-		// Continuation: send the captured last frame
-		imageFilenames = append(imageFilenames, req.FrameFilename)
-	}
-	// Always include all uploaded product images so LLM sees every angle
-	imageFilenames = append(imageFilenames, req.Filenames...)
-
-	if len(imageFilenames) == 0 {
+	if len(req.Filenames) == 0 {
 		jsonError(w, "filenames is required", http.StatusBadRequest)
 		return
 	}
 
 	// Encode all images as JPEG base64
 	var imageBase64s []string
-	for _, fn := range imageFilenames {
+	for _, fn := range req.Filenames {
 		imgPath := filepath.Join("uploads", fn)
 		if _, err := os.Stat(imgPath); os.IsNotExist(err) {
-			continue // skip missing files
+			continue
 		}
 
 		imgFile, err := os.Open(imgPath)
@@ -343,69 +239,47 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build style-specific instruction
-	styleDesc := map[string]string{
-		"cinematic": "slow orbit, dramatic rim lighting, shallow depth of field, premium commercial",
-		"rotating":  "slow 360-degree rotation, soft even lighting, clean background",
-		"lifestyle": "subtle handheld sway, warm golden hour lighting, shallow depth of field, authentic",
-		"tiktok":    "quick zoom-in, product slides into frame with impact, high contrast, bold colors",
-		"unboxing":  "top-down fixed camera, hands opening a separate packaging box (NOT the product itself) to reveal the product inside, slow ASMR pacing",
-		"minimal":   "slow subtle push-in, soft directional shadow, minimalist, sharp focus",
-	}
-
-	hint := styleDesc[req.Style]
-	if hint == "" {
-		hint = "cinematic product commercial"
-	}
-
-	dur := req.Duration
-	if dur < 1 {
-		dur = 5
-	}
-
 	productCtx := "a product"
 	if req.ProductName != "" {
 		productCtx = req.ProductName
 	}
 
-	var userPrompt string
-	if req.IsContinuation {
-		// Continuation prompt: LLM sees the last frame and must write a follow-up segment
-		continueEnding := ""
-		if dur >= 6 {
-			continueEnding = "The video should end by transitioning back to a clean shot of the product, since the original product image will be used as the last frame. "
-		}
-		userPrompt = fmt.Sprintf(
-			"You are writing a continuation prompt for an AI video generator. This is segment #%d of a multi-part advertisement for %s. "+
-				"The attached image is the LAST FRAME of the previous video segment. "+
-				"The previous segment's prompt was: \"%s\" "+
-				"Write a NEW video prompt that continues seamlessly from this frame. The transition should feel natural and connected. "+
-				"The video is %d seconds long. Style: %s. "+
-				"%s"+
-				"Do NOT repeat what the previous segment already showed. Introduce a new angle, scene, or movement that advances the ad story. "+
-				"No emojis, no hashtags, no social media language. "+
-				"Output only the prompt, nothing else.",
-			req.SegmentNumber, productCtx, req.PreviousPrompt, dur, hint, continueEnding,
-		)
-	} else {
-		imageCtx := ""
-		if len(imageBase64s) > 1 {
-			imageCtx = fmt.Sprintf("You are given %d images of the product from different angles. The first image is the start frame and the last image is the end frame of the video. ", len(imageBase64s))
-		}
-		userPrompt = fmt.Sprintf(
-			"You are writing a prompt for an AI video generator to create an advertisement for %s (shown in the images). "+
-				"%s"+
-				"Look at all the images to understand the product's shape, color, and features from every angle. "+
-				"Write a video ad prompt that includes: the scene or environment, camera movement, lighting, mood, and any action or motion that would sell this product. "+
-				"The video is %d seconds long. Style: %s. "+
-				"Do NOT describe the product's appearance in detail — the images are already provided to the video generator. "+
-				"Focus on how the product is showcased: the setting, motion, interactions, and cinematic direction. "+
-				"If multiple angles are provided, incorporate the transition between them (e.g. closed to open, front to back). "+
-				"No emojis, no hashtags, no social media language. "+
-				"Output only the prompt, nothing else.",
-			productCtx, imageCtx, dur, hint,
+	sceneNum := req.SceneNumber
+	if sceneNum < 1 {
+		sceneNum = 1
+	}
+	totalScenes := req.TotalScenes
+	if totalScenes < 1 {
+		totalScenes = 1
+	}
+
+	sceneContext := ""
+	if totalScenes > 1 {
+		sceneContext = fmt.Sprintf(
+			"This is scene %d of %d in a multi-scene advertisement. "+
+				"Each scene is a separate 4-second video. "+
+				"Scene 1 should introduce the product. Middle scenes show different angles or features. The final scene should be a strong closing shot. ",
+			sceneNum, totalScenes,
 		)
 	}
+
+	imageCtx := ""
+	if len(imageBase64s) > 1 {
+		imageCtx = fmt.Sprintf("You are given %d images of the product from different angles. ", len(imageBase64s))
+	}
+
+	userPrompt := fmt.Sprintf(
+		"You are writing a prompt for an AI video generator to create a 4-second advertisement scene for %s (shown in the images). "+
+			"%s%s"+
+			"Look at the images to understand the product's shape, color, and features. "+
+			"Write a video prompt that includes: camera movement, lighting, mood, and motion. "+
+			"Keep it under 200 characters. One scene, one camera move, one action. "+
+			"Do NOT describe the product's appearance — the images are already provided. "+
+			"Focus on how the product is showcased: the setting, motion, and cinematic direction. "+
+			"No emojis, no hashtags, no social media language. "+
+			"Output only the prompt, nothing else.",
+		productCtx, sceneContext, imageCtx,
+	)
 
 	// Build message content: text + all images
 	contentParts := []map[string]interface{}{
@@ -436,7 +310,7 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 
 	chatBody, _ := json.Marshal(chatPayload)
 
-	fmt.Printf("AutoPrompt: Sending %d image(s) to %s (%s)...\n", len(imageBase64s), modelRunnerModel, req.Style)
+	fmt.Printf("AutoPrompt: Sending %d image(s) to %s (scene %d/%d)...\n", len(imageBase64s), modelRunnerModel, sceneNum, totalScenes)
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	httpReq, _ := http.NewRequest("POST", modelRunnerURL, bytes.NewBuffer(chatBody))
@@ -480,17 +354,11 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 
 func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Filenames         []string `json:"filenames"`
-		Style             string   `json:"style"`
-		Ratio             string   `json:"ratio"`
-		CustomPrompt      string   `json:"custom_prompt"`
-		ProductName       string   `json:"product_name"`
-		Count             int      `json:"count"`
-		Duration          int      `json:"duration"`
-		ModelOverride     string   `json:"model_override"`      // optional: override default model
-		IsContinuation    bool     `json:"is_continuation"`
-		LastFrameFilename string   `json:"last_frame_filename"` // captured last frame
-		OriginalFilenames []string `json:"original_filenames"`  // original product images
+		Filenames   []string `json:"filenames"`
+		Prompt      string   `json:"prompt"`
+		Model       string   `json:"model"`
+		Ratio       string   `json:"ratio"`
+		ProductName string   `json:"product_name"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -498,70 +366,37 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !req.IsContinuation && len(req.Filenames) == 0 {
+	if len(req.Filenames) == 0 {
 		jsonError(w, "filenames is required", http.StatusBadRequest)
 		return
 	}
-	if req.IsContinuation && req.LastFrameFilename == "" {
-		jsonError(w, "last_frame_filename is required for continuation", http.StatusBadRequest)
+
+	// Validate model
+	modelInfo, ok := availableModels[req.Model]
+	if !ok {
+		jsonError(w, fmt.Sprintf("Unknown model: %s", req.Model), http.StatusBadRequest)
 		return
 	}
 
+	// Validate images exist
 	var imagePaths []string
-	if req.IsContinuation {
-		// Continuation: last frame = first, original product image = last (if duration >= 6s)
-		lastFramePath := filepath.Join("uploads", req.LastFrameFilename)
-		if _, err := os.Stat(lastFramePath); os.IsNotExist(err) {
-			jsonError(w, "Last frame image not found", http.StatusBadRequest)
+	for _, fn := range req.Filenames {
+		p := filepath.Join("uploads", fn)
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			jsonError(w, fmt.Sprintf("Image not found: %s", fn), http.StatusBadRequest)
 			return
 		}
-		imagePaths = append(imagePaths, lastFramePath)
+		imagePaths = append(imagePaths, p)
+	}
 
-		if req.Duration >= 6 && len(req.OriginalFilenames) > 0 {
-			// Use first original product image as last frame anchor
-			origPath := filepath.Join("uploads", req.OriginalFilenames[0])
-			if _, err := os.Stat(origPath); os.IsNotExist(err) {
-				jsonError(w, "Original product image not found", http.StatusBadRequest)
-				return
-			}
-			imagePaths = append(imagePaths, origPath)
+	// Build prompt — use provided prompt, or a simple default
+	finalPrompt := req.Prompt
+	if finalPrompt == "" {
+		if req.ProductName != "" {
+			finalPrompt = fmt.Sprintf("Commercial advertisement for %s. Slow orbit, dramatic lighting, premium aesthetic. Sharp focus.", req.ProductName)
+		} else {
+			finalPrompt = "Commercial advertisement for a product. Slow orbit, dramatic lighting, premium aesthetic. Sharp focus."
 		}
-	} else {
-		for _, fn := range req.Filenames {
-			p := filepath.Join("uploads", fn)
-			if _, err := os.Stat(p); os.IsNotExist(err) {
-				jsonError(w, fmt.Sprintf("Image not found: %s", fn), http.StatusBadRequest)
-				return
-			}
-			imagePaths = append(imagePaths, p)
-		}
-	}
-
-	// Get style config (auto-selects best model)
-	cfg, ok := styleConfigs[req.Style]
-	if !ok {
-		cfg = styleConfigs["cinematic"]
-	}
-
-	// Allow model override from frontend
-	if req.ModelOverride != "" {
-		if m, ok := availableModels[req.ModelOverride]; ok {
-			cfg.Model = req.ModelOverride
-			cfg.ModelName = m.Name
-			cfg.Price = m.Price
-			fmt.Printf("Model override: %s (%s)\n", cfg.ModelName, cfg.Model)
-		}
-	}
-
-	// If user provided a custom prompt (from Auto Prompt or manual), use it directly.
-	// The base style prompt is only used when no custom prompt is given.
-	finalPrompt := cfg.Prompt
-	if req.ProductName != "" && req.CustomPrompt == "" {
-		// Inject product name into the base prompt so the model knows what it's looking at
-		finalPrompt = fmt.Sprintf("Advertisement for %s. %s", req.ProductName, cfg.Prompt)
-	}
-	if req.CustomPrompt != "" {
-		finalPrompt = req.CustomPrompt
 	}
 
 	// Default ratio
@@ -570,51 +405,33 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		ratio = "9:16"
 	}
 
-	// Generate 4 by default
-	count := req.Count
-	if count < 1 || count > 4 {
-		count = 4
+	job := &Job{
+		ID:         uuid.New().String()[:12],
+		Status:     "processing",
+		Prompt:     finalPrompt,
+		Model:      modelInfo.Name,
+		Ratio:      ratio,
+		Duration:   4,
+		CreatedAt:  time.Now().Format(time.RFC3339),
+		imagePaths: imagePaths,
+		modelID:    req.Model,
 	}
 
-	// Duration depends on model
-	dur := req.Duration
-	if dur < 1 || dur > 16 {
-		dur = 5
-	}
+	jobsMu.Lock()
+	jobs[job.ID] = job
+	jobsMu.Unlock()
 
-	jobIDs := make([]string, count)
-	for i := 0; i < count; i++ {
-		job := &Job{
-			ID:         uuid.New().String()[:12],
-			Status:     "processing",
-			ImagePaths: imagePaths,
-			Prompt:     finalPrompt,
-			Style:     req.Style,
-			Ratio:     ratio,
-			Duration:  dur,
-			Model:     cfg.ModelName,
-			CreatedAt: time.Now().Format(time.RFC3339),
-		}
-
-		jobsMu.Lock()
-		jobs[job.ID] = job
-		jobsMu.Unlock()
-
-		jobIDs[i] = job.ID
-
-		if useMock {
-			go mockGenerate(job)
-		} else {
-			go runwareGenerate(job)
-		}
+	if useMock {
+		go mockGenerate(job)
+	} else {
+		go runwareGenerate(job)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"job_ids": jobIDs,
-		"count":   count,
+		"job_id":  job.ID,
 		"status":  "processing",
-		"message": fmt.Sprintf("%d video generations started", count),
+		"message": "Video generation started",
 	})
 }
 
@@ -627,17 +444,17 @@ func mockGenerate(job *Job) {
 }
 
 func runwareGenerate(job *Job) {
-	fmt.Printf("Job %s: Model=%s Style=%s Images=%d\n", job.ID, job.Model, job.Style, len(job.ImagePaths))
+	fmt.Printf("Job %s: Model=%s Images=%d\n", job.ID, job.Model, len(job.imagePaths))
 	fmt.Printf("Job %s: Prompt=%s\n", job.ID, job.Prompt)
 
-	// Clamp to max 2 images (first + last) — all current models only support 1-2 frameImages
-	usePaths := job.ImagePaths
+	// Clamp to max 2 images (first + last)
+	usePaths := job.imagePaths
 	if len(usePaths) > 2 {
 		usePaths = []string{usePaths[0], usePaths[len(usePaths)-1]}
-		fmt.Printf("Job %s: Clamped %d images → 2 (first + last)\n", job.ID, len(job.ImagePaths))
+		fmt.Printf("Job %s: Clamped %d images → 2 (first + last)\n", job.ID, len(job.imagePaths))
 	}
 
-	// Build frameImages from uploaded images
+	// Build frameImages
 	var frameImages []map[string]interface{}
 	for i, imgPath := range usePaths {
 		imageData, err := os.ReadFile(imgPath)
@@ -661,36 +478,16 @@ func runwareGenerate(job *Job) {
 			"inputImage": imageBase64,
 		}
 
-		// Set frame positions based on style
-		if job.Style == "unboxing" {
-			// Unboxing: product is the REVEAL at the end, not the start
-			if len(usePaths) == 1 {
-				frame["frame"] = "last"
-			} else if i == 0 {
-				frame["frame"] = "first"
-			} else if i == len(usePaths)-1 {
-				frame["frame"] = "last"
-			}
-		} else {
-			// All other styles: first image = start, last image = end
-			if len(usePaths) == 1 {
-				frame["frame"] = "first"
-			} else if i == 0 {
-				frame["frame"] = "first"
-			} else if i == len(usePaths)-1 {
-				frame["frame"] = "last"
-			}
+		if len(usePaths) == 1 {
+			frame["frame"] = "first"
+		} else if i == 0 {
+			frame["frame"] = "first"
+		} else if i == len(usePaths)-1 {
+			frame["frame"] = "last"
 		}
 
 		frameImages = append(frameImages, frame)
 	}
-
-	// Resolve model ID from style config
-	cfg, ok := styleConfigs[job.Style]
-	if !ok {
-		cfg = styleConfigs["cinematic"]
-	}
-	runwareModel := cfg.Model
 
 	// Get dimensions from ratio
 	size := ratioSizes[job.Ratio]
@@ -704,7 +501,7 @@ func runwareGenerate(job *Job) {
 		"taskType":       "videoInference",
 		"taskUUID":       taskUUID,
 		"positivePrompt": job.Prompt,
-		"model":          runwareModel,
+		"model":          job.modelID,
 		"width":          size[0],
 		"height":         size[1],
 		"duration":       job.Duration,
@@ -718,7 +515,7 @@ func runwareGenerate(job *Job) {
 
 	// Model-specific provider settings
 	switch {
-	case runwareModel == "google:3@3" || runwareModel == "google:3@2" || runwareModel == "google:3@1" || runwareModel == "google:3@0":
+	case strings.HasPrefix(job.modelID, "google:"):
 		payload["fps"] = 24
 		payload["providerSettings"] = map[string]interface{}{
 			"google": map[string]interface{}{
@@ -726,13 +523,13 @@ func runwareGenerate(job *Job) {
 				"enhancePrompt": true,
 			},
 		}
-	case runwareModel == "vidu:4@2" || runwareModel == "vidu:4@1":
+	case strings.HasPrefix(job.modelID, "vidu:"):
 		payload["providerSettings"] = map[string]interface{}{
 			"vidu": map[string]interface{}{
 				"audio": true,
 			},
 		}
-	case runwareModel == "pixverse:1@7":
+	case strings.HasPrefix(job.modelID, "pixverse:"):
 		payload["providerSettings"] = map[string]interface{}{
 			"pixverse": map[string]interface{}{
 				"thinking": "auto",
@@ -741,10 +538,9 @@ func runwareGenerate(job *Job) {
 	}
 
 	reqPayload := []map[string]interface{}{payload}
-
 	reqBody, _ := json.Marshal(reqPayload)
 
-	fmt.Printf("Job %s: Calling Runware (%s)...\n", job.ID, runwareModel)
+	fmt.Printf("Job %s: Calling Runware (%s)...\n", job.ID, job.modelID)
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	httpReq, _ := http.NewRequest("POST", runwareAPIURL, bytes.NewBuffer(reqBody))
@@ -766,7 +562,6 @@ func runwareGenerate(job *Job) {
 		return
 	}
 
-	// Parse response — Runware wraps in {"data": [...]}
 	var response struct {
 		Data []map[string]interface{} `json:"data"`
 	}
@@ -775,7 +570,7 @@ func runwareGenerate(job *Job) {
 		return
 	}
 
-	// Check for direct video URL (some models return immediately)
+	// Check for direct video URL
 	for _, result := range response.Data {
 		status, _ := result["status"].(string)
 		if status == "success" {
@@ -828,7 +623,6 @@ func pollResult(job *Job, taskUUID string) {
 			continue
 		}
 
-		// Check for API errors — fail immediately, don't keep polling
 		for _, e := range pollResp.Errors {
 			if msg, ok := e["message"].(string); ok && msg != "" {
 				setJobError(job, msg)
@@ -839,7 +633,6 @@ func pollResult(job *Job, taskUUID string) {
 		for _, result := range pollResp.Data {
 			status, _ := result["status"].(string)
 
-			// Success — get the video URL
 			if status == "success" {
 				if videoURL, ok := result["videoURL"].(string); ok && videoURL != "" {
 					completeJobWithVideo(job, videoURL)
@@ -847,7 +640,6 @@ func pollResult(job *Job, taskUUID string) {
 				}
 			}
 
-			// Error — fail immediately
 			if status == "error" {
 				errMsg := "Unknown error"
 				if msg, ok := result["message"].(string); ok {
@@ -856,8 +648,6 @@ func pollResult(job *Job, taskUUID string) {
 				setJobError(job, errMsg)
 				return
 			}
-
-			// status == "processing" → keep polling
 		}
 	}
 
@@ -867,7 +657,6 @@ func pollResult(job *Job, taskUUID string) {
 func completeJobWithVideo(job *Job, remoteURL string) {
 	fmt.Printf("Job %s: Done! Downloading %s\n", job.ID, remoteURL)
 
-	// Download video to local videos/ folder
 	localPath := filepath.Join("videos", job.ID+".mp4")
 	localURL := fmt.Sprintf("http://localhost:8080/videos/%s.mp4", job.ID)
 
@@ -915,7 +704,12 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(job)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":        job.ID,
+		"status":    job.Status,
+		"video_url": job.VideoURL,
+		"error":     job.Error,
+	})
 }
 
 func handleListJobs(w http.ResponseWriter, r *http.Request) {
@@ -929,26 +723,6 @@ func handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(list)
-}
-
-func handleListModels(w http.ResponseWriter, r *http.Request) {
-	type StyleInfo struct {
-		Style     string  `json:"style"`
-		ModelName string  `json:"model_name"`
-		Price     float64 `json:"price"`
-	}
-
-	var styles []StyleInfo
-	for style, cfg := range styleConfigs {
-		styles = append(styles, StyleInfo{
-			Style:     style,
-			ModelName: cfg.ModelName,
-			Price:     cfg.Price,
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(styles)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
