@@ -80,46 +80,57 @@ var styleConfigs = map[string]StyleConfig{
 	"cinematic": {
 		Model:     "google:3@3",
 		ModelName: "Veo 3.1 Fast",
-		Prompt:    "Cinematic product commercial. Camera slowly orbits around the product. Dramatic studio lighting with soft rim light and shadows. Shallow depth of field. Slow smooth dolly movement. High-end luxury brand advertisement quality.",
+		Prompt:    "Slow orbit around the product. Dramatic rim lighting with soft shadows. Shallow depth of field. Premium commercial aesthetic. Sharp focus.",
 		Price:     0.80,
 	},
 	"rotating": {
 		Model:     "vidu:4@2",
 		ModelName: "Vidu Q3 Turbo",
-		Prompt:    "Product rotating 360 degrees on a turntable. Soft even lighting from all sides, no harsh shadows. The product spins slowly and smoothly in a complete rotation. Professional e-commerce product photography style.",
+		Prompt:    "Product rotates slowly 360 degrees on axis. Soft even lighting, clean white background. Smooth continuous spin. Commercial photography style.",
 		Price:     0.13,
 	},
 	"lifestyle": {
 		Model:     "pixverse:1@7",
 		ModelName: "PixVerse v5.6",
-		Prompt:    "Lifestyle product video. The product in a real-world environment. Warm golden hour natural lighting, soft bokeh background. A hand gently picks up and interacts with the product. Warm color grading, Instagram aesthetic. Authentic and relatable.",
+		Prompt:    "Subtle handheld sway. Warm golden hour lighting, soft bokeh background. Shallow depth of field. Authentic lifestyle aesthetic. Sharp focus on product.",
 		Price:     0.24,
 	},
 	"tiktok": {
 		Model:     "vidu:4@1",
 		ModelName: "Vidu Q3",
-		Prompt:    "Viral TikTok product ad. Quick dynamic camera zoom into the product, punchy energy. The product appears with motion — sliding into frame, spinning, or dropping onto a surface with impact. Trendy Gen-Z aesthetic, high contrast, fast-paced rhythm.",
+		Prompt:    "Quick zoom-in toward the product. Product slides into frame with impact. High contrast, bold colors, fast-paced. Trendy Gen-Z aesthetic.",
 		Price:     0.05,
 	},
 	"unboxing": {
 		Model:     "vidu:4@2",
 		ModelName: "Vidu Q3 Turbo",
-		Prompt:    "POV first-person unboxing video. Start with a closed sleek premium cardboard packaging box on a clean table. Two hands slowly lift the lid off the separate cardboard box. Inside the box, the product is gradually revealed. The box is NOT the product — it is separate outer packaging that contains the product. Smooth slow motion, soft natural lighting, ASMR satisfying reveal moment. The final frame shows the product fully revealed out of the box.",
+		Prompt:    "Top-down fixed camera. Hands lift lid off a separate cardboard packaging box. Tissue paper parts to reveal the product inside. The box is NOT the product — it is outer packaging. Slow satisfying pacing. Soft overhead lighting. ASMR aesthetic.",
 		Price:     0.13,
 	},
 	"minimal": {
 		Model:     "vidu:4@1",
 		ModelName: "Vidu Q3",
-		Prompt:    "Minimal clean product video. The product rests on a smooth surface. Soft directional lighting creates gentle shadows. Very subtle slow camera drift. No distractions, just the product. Apple-style minimalism.",
+		Prompt:    "Product on clean surface. Soft directional shadow. Slow subtle push-in. Minimalist commercial look. Sharp focus.",
 		Price:     0.05,
 	},
 }
 
+// All available models that can be selected
+var availableModels = map[string]struct {
+	Name  string
+	Price float64
+}{
+	"google:3@3":   {Name: "Veo 3.1 Fast", Price: 0.80},
+	"pixverse:1@7": {Name: "PixVerse v5.6", Price: 0.24},
+	"vidu:4@2":     {Name: "Vidu Q3 Turbo", Price: 0.13},
+	"vidu:4@1":     {Name: "Vidu Q3", Price: 0.05},
+}
+
 // Aspect ratio presets (must match Vidu/PixVerse supported dimensions)
 var ratioSizes = map[string][2]int{
-	"9:16":  {1080, 1920}, // Mobile / TikTok / Reels
-	"16:9":  {1920, 1080}, // Desktop / YouTube
-	"1:1":   {1080, 1080}, // Square / Instagram
+	"9:16":  {720, 1280},  // Mobile / TikTok / Reels (720p)
+	"16:9":  {1280, 720},  // Desktop / YouTube (720p)
+	"1:1":   {720, 720},   // Square / Instagram (720p)
 }
 
 type Job struct {
@@ -334,12 +345,12 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 
 	// Build style-specific instruction
 	styleDesc := map[string]string{
-		"cinematic": "cinematic commercial with slow camera orbit, dramatic studio lighting, shallow depth of field",
-		"rotating":  "360-degree product rotation on a turntable, even lighting, smooth spin",
-		"lifestyle": "lifestyle scene in a real-world environment, warm natural lighting, a hand interacting with the product",
-		"tiktok":    "fast-paced TikTok ad with dynamic zoom, product sliding or dropping into frame, high contrast",
-		"unboxing":  "POV unboxing video, hands opening a separate cardboard packaging box (NOT the product itself) to reveal the product inside at the end, slow motion, ASMR aesthetic",
-		"minimal":   "minimal clean shot, product on a smooth surface, soft shadows, subtle camera drift",
+		"cinematic": "slow orbit, dramatic rim lighting, shallow depth of field, premium commercial",
+		"rotating":  "slow 360-degree rotation, soft even lighting, clean background",
+		"lifestyle": "subtle handheld sway, warm golden hour lighting, shallow depth of field, authentic",
+		"tiktok":    "quick zoom-in, product slides into frame with impact, high contrast, bold colors",
+		"unboxing":  "top-down fixed camera, hands opening a separate packaging box (NOT the product itself) to reveal the product inside, slow ASMR pacing",
+		"minimal":   "slow subtle push-in, soft directional shadow, minimalist, sharp focus",
 	}
 
 	hint := styleDesc[req.Style]
@@ -473,8 +484,10 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		Style             string   `json:"style"`
 		Ratio             string   `json:"ratio"`
 		CustomPrompt      string   `json:"custom_prompt"`
+		ProductName       string   `json:"product_name"`
 		Count             int      `json:"count"`
 		Duration          int      `json:"duration"`
+		ModelOverride     string   `json:"model_override"`      // optional: override default model
 		IsContinuation    bool     `json:"is_continuation"`
 		LastFrameFilename string   `json:"last_frame_filename"` // captured last frame
 		OriginalFilenames []string `json:"original_filenames"`  // original product images
@@ -530,9 +543,25 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		cfg = styleConfigs["cinematic"]
 	}
 
+	// Allow model override from frontend
+	if req.ModelOverride != "" {
+		if m, ok := availableModels[req.ModelOverride]; ok {
+			cfg.Model = req.ModelOverride
+			cfg.ModelName = m.Name
+			cfg.Price = m.Price
+			fmt.Printf("Model override: %s (%s)\n", cfg.ModelName, cfg.Model)
+		}
+	}
+
+	// If user provided a custom prompt (from Auto Prompt or manual), use it directly.
+	// The base style prompt is only used when no custom prompt is given.
 	finalPrompt := cfg.Prompt
+	if req.ProductName != "" && req.CustomPrompt == "" {
+		// Inject product name into the base prompt so the model knows what it's looking at
+		finalPrompt = fmt.Sprintf("Advertisement for %s. %s", req.ProductName, cfg.Prompt)
+	}
 	if req.CustomPrompt != "" {
-		finalPrompt = cfg.Prompt + " " + req.CustomPrompt
+		finalPrompt = req.CustomPrompt
 	}
 
 	// Default ratio

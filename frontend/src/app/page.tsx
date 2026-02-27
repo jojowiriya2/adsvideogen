@@ -14,65 +14,60 @@ import {
 
 const API_URL = "http://localhost:8080";
 
+const MODELS = [
+  { id: "google:3@3", name: "Veo 3.1 Fast", price: 0.80, estSeconds: 120 },
+  { id: "pixverse:1@7", name: "PixVerse v5.6", price: 0.24, estSeconds: 90 },
+  { id: "vidu:4@2", name: "Vidu Q3 Turbo", price: 0.13, estSeconds: 60 },
+  { id: "vidu:4@1", name: "Vidu Q3", price: 0.05, estSeconds: 60 },
+];
+
 const AD_STYLES = [
   {
     value: "cinematic",
     label: "Cinematic",
-    model: "Veo 3.1 Fast",
-    priceNum: 0.80,
-    desc: "Google Veo 3.1 — best quality with native audio",
+    defaultModelId: "google:3@3",
+    desc: "Slow orbit, dramatic rim lighting, premium commercial",
     durations: [4, 6, 8],
-    estSeconds: 120,
     maxImages: 2,
   },
   {
     value: "rotating",
     label: "360 Rotating",
-    model: "Vidu Q3 Turbo",
-    priceNum: 0.13,
+    defaultModelId: "vidu:4@2",
     desc: "Product spin on white background",
     durations: [5, 8, 16],
-    estSeconds: 60,
     maxImages: 2,
   },
   {
     value: "lifestyle",
     label: "Lifestyle",
-    model: "PixVerse v5.6",
-    priceNum: 0.24,
+    defaultModelId: "pixverse:1@7",
     desc: "Real-world setting, warm social media aesthetic",
     durations: [5, 8],
-    estSeconds: 90,
     maxImages: 2,
   },
   {
     value: "tiktok",
     label: "TikTok / Reels",
-    model: "Vidu Q3",
-    priceNum: 0.05,
-    desc: "Fast-paced, bold colors, dynamic transitions",
+    defaultModelId: "vidu:4@1",
+    desc: "Fast-paced, bold colors, quick zoom-in",
     durations: [5, 8, 16],
-    estSeconds: 60,
     maxImages: 2,
   },
   {
     value: "unboxing",
     label: "POV Unboxing",
-    model: "Vidu Q3 Turbo",
-    priceNum: 0.13,
+    defaultModelId: "vidu:4@2",
     desc: "Satisfying unboxing reveal, POV style",
     durations: [5, 8, 16],
-    estSeconds: 60,
     maxImages: 2,
   },
   {
     value: "minimal",
     label: "Minimal Clean",
-    model: "Vidu Q3",
-    priceNum: 0.05,
+    defaultModelId: "vidu:4@1",
     desc: "Simple surface, soft shadows, modern look",
     durations: [5, 8, 16],
-    estSeconds: 60,
     maxImages: 2,
   },
 ];
@@ -128,8 +123,11 @@ export default function Home() {
   const [continuationPrompt, setContinuationPrompt] = useState("");
   const [showContinuePanel, setShowContinuePanel] = useState(false);
   const [continuationFrameFilename, setContinuationFrameFilename] = useState<string | null>(null);
+  const [modelOverride, setModelOverride] = useState<string | null>(null);
 
   const selectedStyle = AD_STYLES.find((s) => s.value === style)!;
+  const activeModelId = modelOverride || selectedStyle.defaultModelId;
+  const activeModel = MODELS.find((m) => m.id === activeModelId)!;
   const maxImages = selectedStyle.maxImages;
 
   const allUploaded = images.length > 0 && images.every((img) => img.filename !== null);
@@ -286,8 +284,10 @@ export default function Home() {
           style: style,
           ratio: ratio,
           custom_prompt: customPrompt,
+          product_name: productName,
           count: videoCount,
           duration: duration,
+          model_override: modelOverride || undefined,
         }),
       });
       const data = await res.json();
@@ -346,6 +346,7 @@ export default function Home() {
           custom_prompt: continuationPrompt,
           count: 1,
           duration: duration,
+          model_override: modelOverride || undefined,
           is_continuation: true,
           last_frame_filename: continuationFrameFilename,
           original_filenames: uploadedFilenames,
@@ -651,6 +652,7 @@ export default function Home() {
             <h3 className="mb-3 font-semibold text-white">2. Ad Style</h3>
             <Select value={style} onValueChange={(v) => {
                 setStyle(v);
+                setModelOverride(null); // reset to style default
                 const newStyle = AD_STYLES.find((s) => s.value === v)!;
                 if (!newStyle.durations.includes(duration)) {
                   setDuration(newStyle.durations[0]);
@@ -679,12 +681,43 @@ export default function Home() {
                 ))}
               </SelectContent>
             </Select>
-            <div className="mt-3 text-xs text-zinc-500">
-              <p>{selectedStyle.desc}</p>
-              <p className="mt-1 text-zinc-600">
-                Model: {selectedStyle.model} · ${selectedStyle.priceNum.toFixed(2)}/video
+            <p className="mt-2 text-xs text-zinc-500">{selectedStyle.desc}</p>
+
+            <h3 className="mb-2 mt-4 font-semibold text-white">
+              Model
+              {modelOverride && (
+                <button
+                  onClick={() => setModelOverride(null)}
+                  className="ml-2 text-[10px] font-normal text-zinc-500 hover:text-zinc-300"
+                >
+                  (reset to default)
+                </button>
+              )}
+            </h3>
+            <Select value={activeModelId} onValueChange={(v) => {
+              setModelOverride(v === selectedStyle.defaultModelId ? null : v);
+            }}>
+              <SelectTrigger className="border-zinc-700 bg-zinc-800 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-zinc-700 bg-zinc-800">
+                {MODELS.map((m) => (
+                  <SelectItem
+                    key={m.id}
+                    value={m.id}
+                    className="text-white hover:bg-zinc-700"
+                  >
+                    {m.name} · ${m.price.toFixed(2)}
+                    {m.id === selectedStyle.defaultModelId ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {modelOverride && (
+              <p className="mt-1 text-[10px] text-yellow-500/70">
+                Overriding default model for {selectedStyle.label}
               </p>
-            </div>
+            )}
 
             <h3 className="mb-2 mt-4 font-semibold text-white">Aspect Ratio</h3>
             <div className="grid grid-cols-2 gap-2">
@@ -788,7 +821,7 @@ export default function Home() {
             >
               {isGenerating
                 ? `Generating... (${processingCount} left)`
-                : `Generate ${videoCount} Video${videoCount > 1 ? "s" : ""} ($${(selectedStyle.priceNum * videoCount).toFixed(2)})`}
+                : `Generate ${videoCount} Video${videoCount > 1 ? "s" : ""} ($${(activeModel.price * videoCount).toFixed(2)})`}
             </Button>
           </Card>
         </div>
@@ -899,7 +932,7 @@ export default function Home() {
               >
                 {isGenerating
                   ? `Generating segment #${chain.length + 1}...`
-                  : `Generate Segment #${chain.length + 1} ($${selectedStyle.priceNum.toFixed(2)})`}
+                  : `Generate Segment #${chain.length + 1} ($${activeModel.price.toFixed(2)})`}
               </Button>
               <Button
                 variant="outline"
@@ -937,7 +970,7 @@ export default function Home() {
                   }
                 >
                   {video.status === "processing" && (() => {
-                    const est = selectedStyle.estSeconds;
+                    const est = activeModel.estSeconds;
                     const pct = Math.min(Math.round((elapsed / est) * 100), 95);
                     const mins = Math.floor(elapsed / 60);
                     const secs = elapsed % 60;
