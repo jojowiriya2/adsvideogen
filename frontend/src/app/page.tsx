@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -158,6 +158,186 @@ function ProjectListView({
   );
 }
 
+// ─── Asset Setup Modal ───────────────────────────────────────────────
+function AssetModal({
+  images,
+  productName,
+  ratio,
+  isUploading,
+  onAddFiles,
+  onRemoveImage,
+  onUpload,
+  onSetProductName,
+  onSetRatio,
+  onSave,
+  onCancel,
+  canCancel,
+}: {
+  images: UploadedImage[];
+  productName: string;
+  ratio: string;
+  isUploading: boolean;
+  onAddFiles: (files: FileList | File[]) => void;
+  onRemoveImage: (index: number) => void;
+  onUpload: () => void;
+  onSetProductName: (name: string) => void;
+  onSetRatio: (ratio: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  canCancel: boolean;
+}) {
+  const [dragActive, setDragActive] = useState(false);
+  const allUploaded = images.length > 0 && images.every((img) => img.filename !== null);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="mx-4 w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 p-6 shadow-2xl">
+        <div className="mb-5 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-white">Project Setup</h2>
+          {canCancel && (
+            <button onClick={onCancel} className="text-zinc-500 hover:text-white">
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        {/* Product name */}
+        <div className="mb-4">
+          <p className="mb-1 text-xs font-medium text-zinc-400">Product name</p>
+          <input
+            type="text"
+            value={productName}
+            onChange={(e) => onSetProductName(e.target.value)}
+            placeholder="e.g. wireless earbuds, sunglasses, sneakers..."
+            className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+
+        {/* Image upload */}
+        <div className="mb-4">
+          <p className="mb-1 text-xs font-medium text-zinc-400">
+            Product images <span className="font-normal text-zinc-500">(up to 2)</span>
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {images.map((img, i) => (
+              <div key={i} className="relative group">
+                <img
+                  src={img.previewUrl}
+                  alt={`Image ${i + 1}`}
+                  className="h-28 w-full rounded-lg object-contain bg-zinc-800"
+                />
+                <button
+                  onClick={() => onRemoveImage(i)}
+                  className="absolute right-1 top-1 rounded-full bg-black/70 p-0.5 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black"
+                >
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+                <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-zinc-300">
+                  {i === 0 ? "First" : "Last"}
+                </span>
+                {img.filename && (
+                  <span className="absolute bottom-1 right-1 rounded bg-green-600/80 px-1 py-0.5 text-[9px] text-white">
+                    OK
+                  </span>
+                )}
+              </div>
+            ))}
+
+            {images.length < 2 && (
+              <div
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragActive(false);
+                  if (e.dataTransfer.files?.length) onAddFiles(e.dataTransfer.files);
+                }}
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={() => setDragActive(false)}
+                className={`flex h-28 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors ${
+                  dragActive
+                    ? "border-blue-500 bg-blue-500/10"
+                    : "border-zinc-700 hover:border-zinc-500"
+                }`}
+                onClick={() => document.getElementById("modal-file-input")?.click()}
+              >
+                <svg className="mb-1 h-5 w-5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+                </svg>
+                <p className="text-xs text-zinc-500">
+                  {images.length === 0 ? "Add image" : "Add second angle"}
+                </p>
+                <input
+                  id="modal-file-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.length) onAddFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Aspect ratio */}
+        <div className="mb-5">
+          <p className="mb-1 text-xs font-medium text-zinc-400">Aspect ratio</p>
+          <div className="grid grid-cols-3 gap-2">
+            {RATIOS.map((r) => (
+              <button
+                key={r.value}
+                onClick={() => onSetRatio(r.value)}
+                className={`rounded-lg border px-2 py-1.5 text-left text-xs transition-colors ${
+                  ratio === r.value
+                    ? "border-blue-500 bg-blue-500/10 text-white"
+                    : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500"
+                }`}
+              >
+                <span className="font-medium">{r.label}</span>
+                <span className="block text-[10px] text-zinc-500">{r.value}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-3">
+          {images.length > 0 && !allUploaded ? (
+            <Button className="flex-1 bg-blue-600 hover:bg-blue-700" onClick={onUpload} disabled={isUploading}>
+              {isUploading
+                ? `Uploading... (${images.filter((i) => i.filename).length}/${images.length})`
+                : `Upload & Save`}
+            </Button>
+          ) : (
+            <Button
+              className="flex-1 bg-blue-600 hover:bg-blue-700"
+              onClick={onSave}
+              disabled={!allUploaded || !productName.trim()}
+            >
+              Save
+            </Button>
+          )}
+          {canCancel && (
+            <Button variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+        </div>
+
+        {!productName.trim() && images.length > 0 && (
+          <p className="mt-2 text-[10px] text-yellow-500/70">Enter a product name to continue</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Project Detail View ─────────────────────────────────────────────
 function ProjectDetailView({
   project,
@@ -166,19 +346,17 @@ function ProjectDetailView({
   project: Project;
   onBack: () => void;
 }) {
-  const [tab, setTab] = useState<"assets" | "scenes">("assets");
-
-  // Assets
+  // Assets (managed via modal)
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [productName, setProductName] = useState("");
   const [isUploading, setIsUploading] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
+  const [showModal, setShowModal] = useState(true); // open on first entry
+  const [ratio, setRatio] = useState("9:16");
 
   // Scenes
   const [scenes, setScenes] = useState<Scene[]>([
     { id: generateId(), prompt: "", modelId: "vidu:4@1", jobId: null, status: "idle", videoUrl: null, error: null, isAutoPrompting: false },
   ]);
-  const [ratio, setRatio] = useState("9:16");
 
   // Polling & timer
   const pollingRef = useRef<Set<string>>(new Set());
@@ -206,6 +384,7 @@ function ProjectDetailView({
     return () => clearInterval(interval);
   }, [scenes]);
 
+  // Image helpers
   const addFiles = (files: FileList | File[]) => {
     const newImages: UploadedImage[] = [];
     for (const file of Array.from(files)) {
@@ -227,19 +406,6 @@ function ProjectDetailView({
     });
   };
 
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(false);
-    if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
-  }, [images.length]);
-
-  const onDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(true);
-  }, []);
-
-  const onDragLeave = useCallback(() => setDragActive(false), []);
-
   const uploadImages = async () => {
     const pending = images.filter((img) => img.filename === null);
     if (pending.length === 0) return;
@@ -258,6 +424,8 @@ function ProjectDetailView({
           return copy;
         });
       }
+      // Auto-close modal after successful upload
+      setShowModal(false);
     } catch (err) {
       alert("Upload failed: " + (err as Error).message);
     } finally {
@@ -381,6 +549,24 @@ function ProjectDetailView({
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
+      {/* Asset setup modal */}
+      {showModal && (
+        <AssetModal
+          images={images}
+          productName={productName}
+          ratio={ratio}
+          isUploading={isUploading}
+          onAddFiles={addFiles}
+          onRemoveImage={removeImage}
+          onUpload={uploadImages}
+          onSetProductName={setProductName}
+          onSetRatio={setRatio}
+          onSave={() => setShowModal(false)}
+          onCancel={() => setShowModal(false)}
+          canCancel={allUploaded && productName.trim() !== ""}
+        />
+      )}
+
       <header className="border-b border-zinc-800 px-6 py-4">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <div className="flex items-center gap-3">
@@ -392,6 +578,20 @@ function ProjectDetailView({
             <h1 className="text-xl font-bold">{project.name}</h1>
           </div>
           <div className="flex items-center gap-3">
+            {/* Edit assets button */}
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-xs text-zinc-400 hover:border-zinc-500 hover:text-white"
+            >
+              {allUploaded && images.length > 0 && (
+                <div className="flex -space-x-1">
+                  {images.map((img, i) => (
+                    <img key={i} src={img.previewUrl} alt="" className="h-4 w-4 rounded-sm border border-zinc-700 object-cover" />
+                  ))}
+                </div>
+              )}
+              <span>{allUploaded ? "Edit Assets" : "Setup Assets"}</span>
+            </button>
             {completedCount > 0 && (
               <Badge variant="secondary" className="bg-green-600/20 text-green-300">
                 {completedCount}/{scenes.length} done
@@ -403,385 +603,221 @@ function ProjectDetailView({
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-6">
-        {/* Tabs */}
-        <div className="mb-6 flex gap-1 rounded-lg bg-zinc-900 p-1">
-          <button
-            onClick={() => setTab("assets")}
-            className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              tab === "assets" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            Assets
-            {allUploaded && (
-              <span className="ml-2 text-[10px] text-green-400">({images.length} uploaded)</span>
-            )}
-          </button>
-          <button
-            onClick={() => setTab("scenes")}
-            className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-              tab === "scenes" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            Scenes
-            <span className="ml-2 text-[10px] text-zinc-500">({scenes.length})</span>
-          </button>
+        {/* Asset preview bar */}
+        {allUploaded && (
+          <div className="mb-4 flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+            <div className="flex gap-2">
+              {images.map((img, i) => (
+                <img key={i} src={img.previewUrl} alt="" className="h-10 w-10 rounded-md border border-zinc-700 object-contain bg-zinc-800" />
+              ))}
+            </div>
+            <div className="text-xs">
+              <span className="font-medium text-white">{productName}</span>
+              <span className="ml-2 text-zinc-500">{RATIOS.find((r) => r.value === ratio)?.desc}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Warning if no assets */}
+        {!allUploaded && !showModal && (
+          <Card className="mb-6 border-yellow-500/30 bg-yellow-950/10 p-4">
+            <p className="text-sm text-yellow-300">
+              Set up your product images and name first.
+            </p>
+            <Button size="sm" variant="outline" className="mt-2" onClick={() => setShowModal(true)}>
+              Setup Assets
+            </Button>
+          </Card>
+        )}
+
+        {/* Generate All + Add Scene controls */}
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={generateAll}
+              disabled={!allUploaded || isAnyGenerating || scenes.every((s) => !s.prompt.trim())}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {isAnyGenerating
+                ? "Generating..."
+                : `Generate All (${scenes.filter((s) => s.prompt.trim()).length} scene${scenes.filter((s) => s.prompt.trim()).length !== 1 ? "s" : ""} · $${totalCost.toFixed(2)})`}
+            </Button>
+            <span className="text-xs text-zinc-500">
+              Each scene = 4s video
+            </span>
+          </div>
+          <Button variant="outline" size="sm" onClick={addScene}>
+            + Add Scene
+          </Button>
         </div>
 
-        {/* ── Assets Tab ── */}
-        {tab === "assets" && (
-          <div className="grid gap-6 md:grid-cols-2">
-            {/* Upload */}
-            <Card className="border-zinc-800 bg-zinc-900 p-5">
-              <h3 className="mb-1 font-semibold text-white">Product Images</h3>
-              <p className="mb-3 text-[10px] text-zinc-500">
-                Up to 2 images — first = start frame, last = end frame
-              </p>
+        {/* Scene list */}
+        <div className="space-y-4">
+          {scenes.map((scene, index) => {
+            const model = MODELS.find((m) => m.id === scene.modelId)!;
+            const sceneElapsed = elapsed[scene.id] || 0;
+            const pct = scene.status === "generating"
+              ? Math.min(Math.round((sceneElapsed / model.estSeconds) * 100), 95)
+              : 0;
 
-              <div className="grid grid-cols-2 gap-2">
-                {images.map((img, i) => (
-                  <div key={i} className="relative group">
-                    <img
-                      src={img.previewUrl}
-                      alt={`Image ${i + 1}`}
-                      className="h-32 w-full rounded-lg object-contain bg-zinc-800"
-                    />
-                    <button
-                      onClick={() => removeImage(i)}
-                      className="absolute right-1 top-1 rounded-full bg-black/70 p-0.5 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-black"
-                    >
-                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                    <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-zinc-300">
-                      {i === 0 ? "First" : "Last"}
-                    </span>
-                    {img.filename && (
-                      <span className="absolute bottom-1 right-1 rounded bg-green-600/80 px-1 py-0.5 text-[9px] text-white">
-                        OK
-                      </span>
-                    )}
+            return (
+              <Card key={scene.id} className="border-zinc-800 bg-zinc-900 p-4">
+                <div className="flex items-start gap-4">
+                  {/* Scene number */}
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-sm font-bold text-zinc-400">
+                    {index + 1}
                   </div>
-                ))}
 
-                {images.length < 2 && (
-                  <div
-                    onDrop={onDrop}
-                    onDragOver={onDragOver}
-                    onDragLeave={onDragLeave}
-                    className={`flex h-32 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors ${
-                      dragActive
-                        ? "border-blue-500 bg-blue-500/10"
-                        : "border-zinc-700 hover:border-zinc-500"
-                    }`}
-                    onClick={() => document.getElementById("file-input")?.click()}
-                  >
-                    <svg className="mb-1 h-5 w-5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                    </svg>
-                    <p className="text-xs text-zinc-500">
-                      {images.length === 0 ? "Add image" : "Add second angle"}
-                    </p>
-                    <input
-                      id="file-input"
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => {
-                        if (e.target.files?.length) addFiles(e.target.files);
-                        e.target.value = "";
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+                  {/* Scene content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="mb-3 flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-white">Scene {index + 1}</h4>
+                      {scene.status === "completed" && (
+                        <Badge className="bg-green-600/20 text-green-300 text-[10px]">Done</Badge>
+                      )}
+                      {scene.status === "failed" && (
+                        <Badge className="bg-red-600/20 text-red-300 text-[10px]">Failed</Badge>
+                      )}
+                      {scenes.length > 1 && (
+                        <button
+                          onClick={() => removeScene(scene.id)}
+                          className="ml-auto text-xs text-zinc-600 hover:text-red-400"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
 
-              {images.length > 0 && !allUploaded && (
-                <Button
-                  className="mt-3 w-full"
-                  size="sm"
-                  onClick={uploadImages}
-                  disabled={isUploading}
-                >
-                  {isUploading
-                    ? `Uploading... (${images.filter((i) => i.filename).length}/${images.length})`
-                    : `Upload ${images.length} image${images.length > 1 ? "s" : ""}`}
-                </Button>
-              )}
-              {allUploaded && (
-                <div className="mt-2 flex items-center justify-between">
-                  <p className="text-xs text-green-400">
-                    {images.length} image{images.length > 1 ? "s" : ""} ready
-                  </p>
-                  <button
-                    onClick={() => {
-                      images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
-                      setImages([]);
-                    }}
-                    className="text-xs text-zinc-500 hover:text-zinc-300"
-                  >
-                    Clear
-                  </button>
-                </div>
-              )}
-            </Card>
+                    {/* Prompt + Auto Prompt */}
+                    <div className="mb-3">
+                      <div className="mb-1 flex items-center justify-between">
+                        <p className="text-xs text-zinc-400">Prompt</p>
+                        <button
+                          onClick={() => autoPromptScene(scene.id)}
+                          disabled={!allUploaded || scene.isAutoPrompting}
+                          className="rounded-md bg-purple-600 px-2 py-0.5 text-[10px] font-medium text-white transition-colors hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {scene.isAutoPrompting ? "Analyzing..." : "Auto Prompt"}
+                        </button>
+                      </div>
+                      <textarea
+                        value={scene.prompt}
+                        onChange={(e) => {
+                          updateScene(scene.id, { prompt: e.target.value });
+                          e.target.style.height = "auto";
+                          e.target.style.height = e.target.scrollHeight + "px";
+                        }}
+                        ref={(el) => {
+                          if (el) {
+                            el.style.height = "auto";
+                            el.style.height = el.scrollHeight + "px";
+                          }
+                        }}
+                        placeholder="Describe this scene... or click Auto Prompt"
+                        className="w-full resize-none overflow-hidden rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white placeholder-zinc-600 focus:border-blue-500 focus:outline-none"
+                        rows={2}
+                      />
+                    </div>
 
-            {/* Product info + settings */}
-            <Card className="border-zinc-800 bg-zinc-900 p-5">
-              <h3 className="mb-3 font-semibold text-white">Product Info</h3>
-              <div className="mb-4">
-                <p className="mb-1 text-xs text-zinc-400">Product name</p>
-                <input
-                  type="text"
-                  value={productName}
-                  onChange={(e) => setProductName(e.target.value)}
-                  placeholder="e.g. wireless earbuds, sunglasses, sneakers..."
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-
-              <h3 className="mb-2 font-semibold text-white">Aspect Ratio</h3>
-              <div className="grid grid-cols-3 gap-2">
-                {RATIOS.map((r) => (
-                  <button
-                    key={r.value}
-                    onClick={() => setRatio(r.value)}
-                    className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                      ratio === r.value
-                        ? "border-blue-500 bg-blue-500/10 text-white"
-                        : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500"
-                    }`}
-                  >
-                    <span className="font-medium">{r.label}</span>
-                    <span className="block text-[10px] text-zinc-500">{r.desc}</span>
-                  </button>
-                ))}
-              </div>
-
-              {allUploaded && (
-                <div className="mt-4 rounded-lg border border-zinc-700 bg-zinc-800 p-3">
-                  <p className="text-xs text-zinc-400">Ready to build scenes</p>
-                  <p className="text-[10px] text-zinc-500 mt-1">
-                    Switch to the Scenes tab to add prompts and generate videos.
-                  </p>
-                  <Button
-                    size="sm"
-                    className="mt-2 bg-blue-600 hover:bg-blue-700"
-                    onClick={() => setTab("scenes")}
-                  >
-                    Go to Scenes
-                  </Button>
-                </div>
-              )}
-            </Card>
-          </div>
-        )}
-
-        {/* ── Scenes Tab ── */}
-        {tab === "scenes" && (
-          <div>
-            {!allUploaded && (
-              <Card className="mb-6 border-yellow-500/30 bg-yellow-950/10 p-4">
-                <p className="text-sm text-yellow-300">
-                  Upload product images first in the Assets tab before generating scenes.
-                </p>
-                <Button size="sm" variant="outline" className="mt-2" onClick={() => setTab("assets")}>
-                  Go to Assets
-                </Button>
-              </Card>
-            )}
-
-            {/* Generate All + Add Scene controls */}
-            <div className="mb-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Button
-                  onClick={generateAll}
-                  disabled={!allUploaded || isAnyGenerating || scenes.every((s) => !s.prompt.trim())}
-                  className="bg-blue-600 hover:bg-blue-700"
-                >
-                  {isAnyGenerating
-                    ? "Generating..."
-                    : `Generate All (${scenes.filter((s) => s.prompt.trim()).length} scene${scenes.filter((s) => s.prompt.trim()).length !== 1 ? "s" : ""} · $${totalCost.toFixed(2)})`}
-                </Button>
-                <span className="text-xs text-zinc-500">
-                  Each scene = 4s video
-                </span>
-              </div>
-              <Button variant="outline" size="sm" onClick={addScene}>
-                + Add Scene
-              </Button>
-            </div>
-
-            {/* Scene list */}
-            <div className="space-y-4">
-              {scenes.map((scene, index) => {
-                const model = MODELS.find((m) => m.id === scene.modelId)!;
-                const sceneElapsed = elapsed[scene.id] || 0;
-                const pct = scene.status === "generating"
-                  ? Math.min(Math.round((sceneElapsed / model.estSeconds) * 100), 95)
-                  : 0;
-
-                return (
-                  <Card key={scene.id} className="border-zinc-800 bg-zinc-900 p-4">
-                    <div className="flex items-start gap-4">
-                      {/* Scene number */}
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-sm font-bold text-zinc-400">
-                        {index + 1}
+                    {/* Model selector + Generate */}
+                    <div className="flex items-center gap-3">
+                      <div className="w-48">
+                        <Select
+                          value={scene.modelId}
+                          onValueChange={(v) => updateScene(scene.id, { modelId: v })}
+                        >
+                          <SelectTrigger className="h-8 border-zinc-700 bg-zinc-800 text-xs text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="border-zinc-700 bg-zinc-800">
+                            {MODELS.map((m) => (
+                              <SelectItem key={m.id} value={m.id} className="text-xs text-white hover:bg-zinc-700">
+                                {m.name} · ${m.price.toFixed(2)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
 
-                      {/* Scene content */}
-                      <div className="flex-1 min-w-0">
-                        <div className="mb-3 flex items-center gap-2">
-                          <h4 className="text-sm font-semibold text-white">Scene {index + 1}</h4>
-                          {scene.status === "completed" && (
-                            <Badge className="bg-green-600/20 text-green-300 text-[10px]">Done</Badge>
-                          )}
-                          {scene.status === "failed" && (
-                            <Badge className="bg-red-600/20 text-red-300 text-[10px]">Failed</Badge>
-                          )}
-                          {scenes.length > 1 && (
-                            <button
-                              onClick={() => removeScene(scene.id)}
-                              className="ml-auto text-xs text-zinc-600 hover:text-red-400"
-                            >
-                              Remove
-                            </button>
-                          )}
-                        </div>
+                      <Button
+                        size="sm"
+                        onClick={() => generateScene(scene.id)}
+                        disabled={!allUploaded || !scene.prompt.trim() || scene.status === "generating"}
+                        className="bg-blue-600 hover:bg-blue-700 text-xs"
+                      >
+                        {scene.status === "generating" ? "Generating..." : `Generate ($${model.price.toFixed(2)})`}
+                      </Button>
+                    </div>
 
-                        {/* Prompt + Auto Prompt */}
-                        <div className="mb-3">
-                          <div className="mb-1 flex items-center justify-between">
-                            <p className="text-xs text-zinc-400">Prompt</p>
-                            <button
-                              onClick={() => autoPromptScene(scene.id)}
-                              disabled={!allUploaded || scene.isAutoPrompting}
-                              className="rounded-md bg-purple-600 px-2 py-0.5 text-[10px] font-medium text-white transition-colors hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              {scene.isAutoPrompting ? "Analyzing..." : "Auto Prompt"}
-                            </button>
-                          </div>
-                          <textarea
-                            value={scene.prompt}
-                            onChange={(e) => {
-                              updateScene(scene.id, { prompt: e.target.value });
-                              e.target.style.height = "auto";
-                              e.target.style.height = e.target.scrollHeight + "px";
-                            }}
-                            ref={(el) => {
-                              if (el) {
-                                el.style.height = "auto";
-                                el.style.height = el.scrollHeight + "px";
-                              }
-                            }}
-                            placeholder="Describe this scene... or click Auto Prompt"
-                            className="w-full resize-none overflow-hidden rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white placeholder-zinc-600 focus:border-blue-500 focus:outline-none"
-                            rows={2}
+                    {/* Error */}
+                    {scene.status === "failed" && scene.error && (
+                      <p className="mt-2 text-xs text-red-400">Error: {scene.error}</p>
+                    )}
+
+                    {/* Progress */}
+                    {scene.status === "generating" && (
+                      <div className="mt-3">
+                        <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
+                          <span>{sceneElapsed}s elapsed</span>
+                          <span>~{pct}%</span>
+                        </div>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-700">
+                          <div
+                            className="h-full rounded-full bg-blue-500 transition-all duration-1000"
+                            style={{ width: `${pct}%` }}
                           />
                         </div>
+                      </div>
+                    )}
 
-                        {/* Model selector + Generate */}
-                        <div className="flex items-center gap-3">
-                          <div className="w-48">
-                            <Select
-                              value={scene.modelId}
-                              onValueChange={(v) => updateScene(scene.id, { modelId: v })}
-                            >
-                              <SelectTrigger className="h-8 border-zinc-700 bg-zinc-800 text-xs text-white">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent className="border-zinc-700 bg-zinc-800">
-                                {MODELS.map((m) => (
-                                  <SelectItem key={m.id} value={m.id} className="text-xs text-white hover:bg-zinc-700">
-                                    {m.name} · ${m.price.toFixed(2)}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-
+                    {/* Video result */}
+                    {scene.status === "completed" && scene.videoUrl && (
+                      <div className="mt-3">
+                        <video
+                          src={scene.videoUrl}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          className="w-full max-w-sm rounded-lg bg-black object-contain"
+                          style={{ aspectRatio: ratio.replace(":", " / ") }}
+                        />
+                        <div className="mt-2 flex gap-2">
+                          <Button asChild size="sm" variant="outline" className="text-xs">
+                            <a href={scene.videoUrl} download>
+                              Download
+                            </a>
+                          </Button>
                           <Button
                             size="sm"
-                            onClick={() => generateScene(scene.id)}
-                            disabled={!allUploaded || !scene.prompt.trim() || scene.status === "generating"}
-                            className="bg-blue-600 hover:bg-blue-700 text-xs"
+                            variant="outline"
+                            className="text-xs"
+                            onClick={() => {
+                              updateScene(scene.id, { status: "idle", videoUrl: null, error: null, jobId: null });
+                            }}
                           >
-                            {scene.status === "generating" ? "Generating..." : `Generate ($${model.price.toFixed(2)})`}
+                            Re-generate
                           </Button>
                         </div>
-
-                        {/* Error */}
-                        {scene.status === "failed" && scene.error && (
-                          <p className="mt-2 text-xs text-red-400">Error: {scene.error}</p>
-                        )}
-
-                        {/* Progress */}
-                        {scene.status === "generating" && (
-                          <div className="mt-3">
-                            <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
-                              <span>{sceneElapsed}s elapsed</span>
-                              <span>~{pct}%</span>
-                            </div>
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-700">
-                              <div
-                                className="h-full rounded-full bg-blue-500 transition-all duration-1000"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Video result */}
-                        {scene.status === "completed" && scene.videoUrl && (
-                          <div className="mt-3">
-                            <video
-                              src={scene.videoUrl}
-                              autoPlay
-                              loop
-                              muted
-                              playsInline
-                              className="w-full max-w-sm rounded-lg bg-black object-contain"
-                              style={{ aspectRatio: ratio.replace(":", " / ") }}
-                            />
-                            <div className="mt-2 flex gap-2">
-                              <Button asChild size="sm" variant="outline" className="text-xs">
-                                <a href={scene.videoUrl} download>
-                                  Download
-                                </a>
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="text-xs"
-                                onClick={() => {
-                                  updateScene(scene.id, { status: "idle", videoUrl: null, error: null, jobId: null });
-                                }}
-                              >
-                                Re-generate
-                              </Button>
-                            </div>
-                          </div>
-                        )}
                       </div>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
 
-            {/* Add scene button at bottom */}
-            <button
-              onClick={addScene}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-zinc-800 py-3 text-sm text-zinc-500 transition-colors hover:border-zinc-600 hover:text-zinc-300"
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-              </svg>
-              Add Scene
-            </button>
-          </div>
-        )}
+        {/* Add scene button at bottom */}
+        <button
+          onClick={addScene}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-zinc-800 py-3 text-sm text-zinc-500 transition-colors hover:border-zinc-600 hover:text-zinc-300"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+          </svg>
+          Add Scene
+        </button>
       </main>
     </div>
   );
