@@ -189,10 +189,12 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Filenames   []string `json:"filenames"`
-		ProductName string   `json:"product_name"`
-		SceneNumber int      `json:"scene_number"`
-		TotalScenes int      `json:"total_scenes"`
+		Filenames      []string `json:"filenames"`
+		ProductName    string   `json:"product_name"`
+		SceneNumber    int      `json:"scene_number"`
+		TotalScenes    int      `json:"total_scenes"`
+		Duration       int      `json:"duration"`
+		PreviousPrompts []string `json:"previous_prompts"` // prompts from earlier scenes
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -248,37 +250,36 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 	if sceneNum < 1 {
 		sceneNum = 1
 	}
-	totalScenes := req.TotalScenes
-	if totalScenes < 1 {
-		totalScenes = 1
+
+	dur := req.Duration
+	if dur < 1 {
+		dur = 4
 	}
 
-	sceneContext := ""
-	if totalScenes > 1 {
-		sceneContext = fmt.Sprintf(
-			"This is scene %d of %d in a multi-scene advertisement. "+
-				"Each scene is a separate 4-second video. "+
-				"Scene 1 should introduce the product. Middle scenes show different angles or features. The final scene should be a strong closing shot. ",
-			sceneNum, totalScenes,
-		)
-	}
-
-	imageCtx := ""
-	if len(imageBase64s) > 1 {
-		imageCtx = fmt.Sprintf("You are given %d images of the product from different angles. ", len(imageBase64s))
+	// Build context about previous scenes so the LLM knows what was already covered
+	previousCtx := ""
+	if len(req.PreviousPrompts) > 0 {
+		previousCtx = "Previous scenes already done:\n"
+		for i, p := range req.PreviousPrompts {
+			previousCtx += fmt.Sprintf("  Scene %d: %s\n", i+1, p)
+		}
+		previousCtx += fmt.Sprintf("Now write scene %d. Do NOT repeat what previous scenes already show. Use a different camera move, angle, or setting.\n", sceneNum)
 	}
 
 	userPrompt := fmt.Sprintf(
-		"You are writing a prompt for an AI video generator to create a 4-second advertisement scene for %s (shown in the images). "+
-			"%s%s"+
-			"Look at the images to understand the product's shape, color, and features. "+
-			"Write a video prompt that includes: camera movement, lighting, mood, and motion. "+
-			"Keep it under 200 characters. One scene, one camera move, one action. "+
-			"Do NOT describe the product's appearance — the images are already provided. "+
-			"Focus on how the product is showcased: the setting, motion, and cinematic direction. "+
-			"No emojis, no hashtags, no social media language. "+
-			"Output only the prompt, nothing else.",
-		productCtx, sceneContext, imageCtx,
+		"Write a short video prompt for a %d-second ad scene for %s (shown in the attached images). "+
+			"%s"+
+			"RULES: "+
+			"1-2 sentences MAXIMUM. "+
+			"One camera move, one action. "+
+			"Include: camera move + lighting + mood. "+
+			"Do NOT describe the product appearance. "+
+			"Do NOT use labels like 'Camera:', 'Lighting:', 'Scene:'. "+
+			"Do NOT say the duration. "+
+			"Just write the prompt as a plain sentence. "+
+			"Example: 'Slow orbit around the product on marble surface. Warm rim lighting, soft bokeh. Premium feel.' "+
+			"Output ONLY the prompt.",
+		dur, productCtx, previousCtx,
 	)
 
 	// Build message content: text + all images
@@ -310,7 +311,7 @@ func handleAutoPrompt(w http.ResponseWriter, r *http.Request) {
 
 	chatBody, _ := json.Marshal(chatPayload)
 
-	fmt.Printf("AutoPrompt: Sending %d image(s) to %s (scene %d/%d)...\n", len(imageBase64s), modelRunnerModel, sceneNum, totalScenes)
+	fmt.Printf("AutoPrompt: Sending %d image(s) to %s (scene %d/%d)...\n", len(imageBase64s), modelRunnerModel, sceneNum, req.TotalScenes)
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	httpReq, _ := http.NewRequest("POST", modelRunnerURL, bytes.NewBuffer(chatBody))

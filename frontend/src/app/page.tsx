@@ -465,6 +465,8 @@ function ProjectDetailView({
           product_name: productName,
           scene_number: sceneIndex + 1,
           total_scenes: scenes.length,
+          duration: 4,
+          previous_prompts: scenes.slice(0, sceneIndex).map((s) => s.prompt).filter(Boolean),
         }),
       });
       const data = await res.json();
